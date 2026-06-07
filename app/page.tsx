@@ -144,7 +144,7 @@ export default function Home() {
         {loading && (
           <div className="bg-white rounded-3xl p-8 flex flex-col items-center gap-3">
             <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
-            <p className="text-gray-500 text-sm font-medium">Yahoo Finance からデータ取得中...</p>
+            <p className="text-gray-500 text-sm font-medium">株価・財務データを取得中...</p>
           </div>
         )}
 
@@ -153,10 +153,15 @@ export default function Home() {
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
             {/* データソース状況バナー */}
-            {result.details.every((d) => d.dataSource === 'unavailable') && (
+            {result.stock.dataSource === 'jquants' ? (
+              <div className="rounded-2xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-700">
+                <span className="font-bold">✅ Ver2 稼働中：</span>
+                株価（Stooq）＋財務指標（J-Quants API）のリアルデータで採点しています。
+              </div>
+            ) : (
               <div className="rounded-2xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-700">
-                <span className="font-bold">📌 Ver1 状況：</span>
-                株価はStooqから取得済みです。PER・PBR・ROEなどの財務指標はVer2（J-Quants API連携）で追加予定です。
+                <span className="font-bold">📌 Ver1 動作中：</span>
+                株価はStooqから取得済み。財務指標はJ-Quants APIの環境変数（JQUANTS_EMAIL・JQUANTS_PASSWORD）を設定すると有効になります。
               </div>
             )}
 
@@ -206,28 +211,38 @@ export default function Home() {
             <div className="bg-white rounded-3xl p-5 shadow-sm">
               <h3 className="text-sm font-black text-gray-500 mb-3">取得データ一覧</h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                {[
-                  { label: '株価', value: fmt(result.stock.price, '円'), src: '実データ' },
-                  { label: 'PER', value: fmt(result.stock.per, '倍'), src: '実データ' },
-                  { label: 'PBR', value: fmt(result.stock.pbr, '倍'), src: '実データ' },
-                  { label: 'ROE', value: result.stock.roe !== null ? `${(result.stock.roe * 100).toFixed(1)}%` : '—', src: '実データ' },
-                  { label: '配当利回り', value: result.stock.dividendYield !== null ? `${(result.stock.dividendYield * 100).toFixed(2)}%` : '—', src: '実データ' },
-                  { label: '時価総額', value: fmt(result.stock.marketCap, '億円'), src: '実データ' },
-                  { label: '売上高', value: fmt(result.stock.revenue, '億円'), src: '実データ' },
-                  { label: '営業利益(EBITDA)', value: fmt(result.stock.operatingProfit, '億円'), src: '実データ' },
-                  { label: '自己資本比率', value: result.stock.equityRatio !== null ? `${result.stock.equityRatio.toFixed(1)}%` : '—', src: '計算値' },
-                ].map(({ label, value, src }) => (
+                {((): { label: string; value: string; status: 'ok' | 'pending'; note: string }[] => {
+                  const s = result.stock
+                  const isJQ = s.dataSource === 'jquants'
+                  const pendingNote = isJQ ? 'J-Quants取得不可' : '環境変数未設定'
+                  return [
+                    { label: '株価',         value: fmt(s.price, '円'),   status: s.price !== null ? 'ok' : 'pending', note: 'Stooq' },
+                    { label: '前日比',       value: s.changePercent !== null ? `${s.changePercent >= 0 ? '+' : ''}${s.changePercent.toFixed(2)}%` : '—', status: s.changePercent !== null ? 'ok' : 'pending', note: 'Stooq' },
+                    { label: 'PER',          value: s.per !== null ? `${s.per.toFixed(1)}倍` : '—', status: s.per !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: 'PBR',          value: s.pbr !== null ? `${s.pbr.toFixed(2)}倍` : '—', status: s.pbr !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: 'ROE',          value: s.roe !== null ? `${s.roe.toFixed(1)}%` : '—',  status: s.roe !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: '配当利回り',   value: s.dividendYield !== null ? `${(s.dividendYield * 100).toFixed(2)}%` : '—', status: s.dividendYield !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: '時価総額',     value: fmt(s.marketCap, '億円'), status: s.marketCap !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants（算出）' : pendingNote },
+                    { label: '売上高',       value: fmt(s.revenue, '億円'), status: s.revenue !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: '営業利益',     value: fmt(s.operatingProfit, '億円'), status: s.operatingProfit !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: '自己資本比率', value: s.equityRatio !== null ? `${s.equityRatio.toFixed(1)}%` : '—', status: s.equityRatio !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                  ]
+                })().map(({ label, value, status, note }) => (
                   <div key={label} className="flex justify-between items-center py-1.5 border-b border-gray-50">
-                    <span className="text-gray-500 font-medium">{label}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[10px] ${status === 'ok' ? 'text-emerald-500' : 'text-gray-300'}`}>●</span>
+                      <span className="text-gray-600 font-medium">{label}</span>
+                    </div>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-gray-900">{value}</span>
-                      <span className="text-[10px] text-gray-400">{src}</span>
+                      <span className={`font-bold ${status === 'ok' ? 'text-gray-900' : 'text-gray-300'}`}>{value}</span>
+                      <span className="text-[10px] text-gray-400 min-w-[72px] text-right">{note}</span>
                     </div>
                   </div>
                 ))}
               </div>
               <p className="mt-3 text-[11px] text-gray-400">
-                データ取得: {new Date(result.stock.fetchedAt).toLocaleString('ja-JP')} ／ Yahoo Finance（非公式API）
+                取得日時: {new Date(result.stock.fetchedAt).toLocaleString('ja-JP')}
+                　●＝取得済み　○＝未取得
               </p>
             </div>
 

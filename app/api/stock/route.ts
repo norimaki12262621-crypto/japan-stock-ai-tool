@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { StockData, ApiError } from '@/lib/stockTypes'
+import { fetchJQuantsFundamentals } from '@/lib/jquants'
 
 // 主要日本株の銘柄名テーブル
 const STOCK_NAMES: Record<string, string> = {
@@ -53,6 +54,44 @@ function parseStooqCsv(csv: string): Array<Record<string, string>> {
   })
 }
 
+async function fetchStooqPrice(code: string): Promise<{
+  price: number | null
+  changePercent: number | null
+}> {
+  const today = new Date()
+  const from = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000)
+  const url = `https://stooq.com/q/d/l/?s=${code}.jp&d1=${yyyymmdd(from)}&d2=${yyyymmdd(today)}&i=d`
+
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      Accept: 'text/csv,text/plain,*/*',
+      Referer: 'https://stooq.com/',
+    },
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`Stooq returned HTTP ${res.status}`)
+
+  const csv = await res.text()
+  const rows = parseStooqCsv(csv)
+
+  const latest = rows[0]
+  const prev = rows[1]
+  if (!latest?.['Close']) return { price: null, changePercent: null }
+
+  const price = parseFloat(latest['Close'])
+  const prevClose = prev ? parseFloat(prev['Close']) : null
+
+  if (isNaN(price) || price <= 0) return { price: null, changePercent: null }
+
+  const changePercent =
+    prevClose && !isNaN(prevClose) && prevClose > 0
+      ? ((price - prevClose) / prevClose) * 100
+      : null
+
+  return { price, changePercent }
+}
+
 export async function GET(request: Request): Promise<NextResponse<StockData | ApiError>> {
   const { searchParams } = new URL(request.url)
   const code = searchParams.get('code')?.replace(/\D/g, '')
@@ -64,27 +103,13 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     )
   }
 
-  // 直近10営業日分を取得して前日比を計算する
-  const today = new Date()
-  const from = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000)
-  const d1 = yyyymmdd(from)
-  const d2 = yyyymmdd(today)
-  const url = `https://stooq.com/q/d/l/?s=${code}.jp&d1=${d1}&d2=${d2}&i=d`
-
-  let csv: string
+  // ── Step 1: Stooq から株価取得 ──────────────────────────────────────
+  let price: number | null = null
+  let changePercent: number | null = null
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        Accept: 'text/csv,text/plain,*/*',
-        'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-        Referer: 'https://stooq.com/',
-      },
-      // Vercelのキャッシュ：60秒間は再取得しない
-      next: { revalidate: 60 },
-    })
-    if (!res.ok) throw new Error(`Stooq returned HTTP ${res.status}`)
-    csv = await res.text()
+    const stooq = await fetchStooqPrice(code)
+    price = stooq.price
+    changePercent = stooq.changePercent
   } catch (e) {
     return NextResponse.json(
       { error: `株価データの取得に失敗しました。(${e instanceof Error ? e.message : 'unknown'})` },
@@ -92,50 +117,49 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     )
   }
 
-  const rows = parseStooqCsv(csv)
-
-  // Stooqは新しい日付が先頭に来る
-  const latest = rows[0]
-  const prev = rows[1]
-
-  if (!latest || !latest['Close']) {
+  if (price === null) {
     return NextResponse.json(
       { error: `銘柄コード ${code} のデータが見つかりませんでした。コードを確認してください。` },
       { status: 404 },
     )
   }
 
-  const price = parseFloat(latest['Close'])
-  const prevClose = prev ? parseFloat(prev['Close']) : null
+  // ── Step 2: J-Quants から財務指標取得（env未設定なら全部null） ──────
+  const hasJQuantsEnv = !!(process.env.JQUANTS_EMAIL && process.env.JQUANTS_PASSWORD)
 
-  if (isNaN(price) || price <= 0) {
-    return NextResponse.json(
-      { error: `銘柄コード ${code} の株価が正常に取得できませんでした。` },
-      { status: 404 },
-    )
+  let fundamentals = {
+    per: null as number | null,
+    pbr: null as number | null,
+    roe: null as number | null,
+    dividendYield: null as number | null,
+    marketCap: null as number | null,
+    revenue: null as number | null,
+    operatingProfit: null as number | null,
+    equityRatio: null as number | null,
   }
 
-  const changePercent =
-    prevClose && !isNaN(prevClose) && prevClose > 0
-      ? ((price - prevClose) / prevClose) * 100
-      : null
+  if (hasJQuantsEnv) {
+    const jq = await fetchJQuantsFundamentals(code, price)
+    fundamentals = {
+      per: jq.per,
+      pbr: jq.pbr,
+      roe: jq.roe,
+      dividendYield: jq.dividendYield,
+      marketCap: jq.marketCap,
+      revenue: jq.revenue,
+      operatingProfit: jq.operatingProfit,
+      equityRatio: jq.equityRatio,
+    }
+  }
 
   const stock: StockData = {
     code,
-    name: STOCK_NAMES[code] ?? `${code}`,
+    name: STOCK_NAMES[code] ?? code,
     price,
     changePercent,
-    // ── 以下は現在未取得（Ver2でJ-Quants APIを使用予定） ──
-    per: null,
-    pbr: null,
-    roe: null,
-    dividendYield: null,
-    marketCap: null,
-    revenue: null,
-    operatingProfit: null,
-    equityRatio: null,
+    ...fundamentals,
     fetchedAt: new Date().toISOString(),
-    dataSource: 'stooq',
+    dataSource: hasJQuantsEnv ? 'jquants' : 'stooq',
   }
 
   return NextResponse.json(stock)

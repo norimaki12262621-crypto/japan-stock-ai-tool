@@ -25,6 +25,8 @@ export type StockData = {
   equityRatio: number | null
   /** データ取得日時 */
   fetchedAt: string
+  /** データソース識別子 */
+  dataSource?: 'stooq' | 'yahoo' | 'jquants'
 }
 
 export type ScoreDetail = {

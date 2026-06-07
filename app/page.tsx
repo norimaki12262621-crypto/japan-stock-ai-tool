@@ -14,7 +14,7 @@ const JUDGMENT_STYLE = {
 const SOURCE_LABEL: Record<string, string> = {
   real: '実データ',
   calculated: '計算値',
-  unavailable: '取得不可',
+  unavailable: 'Ver2対応予定',
 }
 const SOURCE_COLOR: Record<string, string> = {
   real: 'text-emerald-600 bg-emerald-50',
@@ -151,6 +151,14 @@ export default function Home() {
         {/* 結果 */}
         {result && jStyle && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+
+            {/* データソース状況バナー */}
+            {result.details.every((d) => d.dataSource === 'unavailable') && (
+              <div className="rounded-2xl bg-blue-50 border border-blue-200 px-4 py-3 text-sm text-blue-700">
+                <span className="font-bold">📌 Ver1 状況：</span>
+                株価はStooqから取得済みです。PER・PBR・ROEなどの財務指標はVer2（J-Quants API連携）で追加予定です。
+              </div>
+            )}
 
             {/* 判定カード */}
             <div className={`rounded-3xl border-2 ${jStyle.border} ${jStyle.bg} p-6 text-center shadow-sm`}>

@@ -1,73 +1,66 @@
-/**
- * J-Quants API クライアント（Ver2）
- *
- * 認証フロー:
- *   1. POST /v1/token/auth_user (email + password) → refreshToken (有効期限: 1週間)
- *   2. POST /v1/token/auth_refresh (refreshToken)  → idToken    (有効期限: 24時間)
- *   3. 各エンドポイントに Authorization: Bearer {idToken} で叩く
- *
- * 必要な環境変数:
- *   JQUANTS_EMAIL    - 登録メールアドレス
- *   JQUANTS_PASSWORD - パスワード
- *
- * 無料プラン(Light)でも fins/statements は利用可能。
- * PER/PBR は EPS・BPS と現在株価から算出する。
- */
-
 const BASE = 'https://api.jquants.com/v1'
-
-// ── 型定義 ─────────────────────────────────────────────────────────────────
 
 type AuthUserResponse = { refreshToken?: string; message?: string }
 type AuthRefreshResponse = { idToken?: string; message?: string }
 
 type RawStatement = {
   DisclosedDate?: string
+  DisclosedTime?: string
+  LocalCode?: string
+  DisclosureNumber?: string
   TypeOfDocument?: string
   TypeOfCurrentPeriod?: string
   NetSales?: string
   OperatingProfit?: string
   Profit?: string
   EarningsPerShare?: string
+  ForecastEarningsPerShare?: string
   TotalAssets?: string
   Equity?: string
   EquityToAssetRatio?: string
   BookValuePerShare?: string
-  ResultDividendPerShareFiscalYear?: string
-  ForecastDividendPerShareFiscalYear?: string
+  ResultDividendPerShareFiscalYearEnd?: string
+  ResultDividendPerShareAnnual?: string
+  ForecastDividendPerShareFiscalYearEnd?: string
+  ForecastDividendPerShareAnnual?: string
+  NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock?: string
 }
 
-type StatementsResponse = { statements?: RawStatement[]; message?: string }
+type StatementsResponse = {
+  statements?: RawStatement[]
+  message?: string
+  pagination_key?: string
+}
 
 export type JQuantsFundamentals = {
-  /** 売上高（億円） */
   revenue: number | null
-  /** 営業利益（億円） */
   operatingProfit: number | null
-  /** 自己資本比率（%） */
   equityRatio: number | null
-  /** ROE（%） */
   roe: number | null
-  /** PER（倍） — 現在株価 ÷ 年間EPS */
   per: number | null
-  /** PBR（倍） — 現在株価 ÷ BPS */
   pbr: number | null
-  /** 配当利回り（%） — 年間配当 ÷ 現在株価 */
   dividendYield: number | null
-  /** 時価総額（億円） — 発行株式数 × 現在株価 */
   marketCap: number | null
-  /** 開示日 */
   disclosedDate: string | null
-  /** エラーメッセージ（デバッグ用） */
   fetchError?: string
 }
 
-// ── ID トークンのモジュールレベルキャッシュ ─────────────────────────────────
-// Next.js の Fluid Compute ではウォームインスタンスでモジュール変数が保持される。
-// コールドスタート時は再取得する（24時間有効なので殆どの場合はキャッシュを使用）。
-let _idTokenCache: { token: string; expiresAt: number } | null = null
+export type JQuantsStatementsDebug = {
+  requestedCode: string
+  normalizedFiveDigitCode: string | null
+  endpoint: string
+  status: number | null
+  error: string | null
+  topLevelKeys: string[]
+  statementsCount: number
+  firstStatementKeys: string[]
+  latestStatementKeys: string[]
+  selectedStatementKeys: string[]
+  firstStatementPreview: Record<string, unknown> | null
+  selectedStatementPreview: Record<string, unknown> | null
+}
 
-// ── 認証 ─────────────────────────────────────────────────────────────────
+let _idTokenCache: { token: string; expiresAt: number } | null = null
 
 async function fetchRefreshToken(email: string, password: string): Promise<string> {
   const res = await fetch(`${BASE}/token/auth_user`, {
@@ -101,71 +94,164 @@ async function getIdToken(): Promise<string> {
 
   const email = process.env.JQUANTS_EMAIL
   const password = process.env.JQUANTS_PASSWORD
-  if (!email || !password) throw new Error('JQUANTS_EMAIL / JQUANTS_PASSWORD が未設定です')
+  if (!email || !password) throw new Error('JQUANTS_EMAIL / JQUANTS_PASSWORD is not set')
 
   const refreshToken = await fetchRefreshToken(email, password)
   const idToken = await fetchIdToken(refreshToken)
-
-  // 23時間でキャッシュ失効（ID トークンは24時間有効）
   _idTokenCache = { token: idToken, expiresAt: now + 23 * 60 * 60 * 1000 }
   return idToken
 }
 
-// ── 財務諸表取得 ─────────────────────────────────────────────────────────────
+function statementsUrl(code: string): string {
+  return `${BASE}/fins/statements?code=${encodeURIComponent(code)}`
+}
 
-async function fetchStatements(idToken: string, code: string): Promise<RawStatement[]> {
-  // J-Quants は 4桁コードで検索可能（内部では "72030" 形式で管理）
-  const res = await fetch(`${BASE}/fins/statements?code=${code}`, {
+async function fetchStatementsResponse(idToken: string, code: string): Promise<{
+  url: string
+  status: number
+  json: StatementsResponse
+}> {
+  const url = statementsUrl(code)
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${idToken}` },
-    next: { revalidate: 3600 }, // 1時間キャッシュ
+    next: { revalidate: 3600 },
   })
   const json = await res.json() as StatementsResponse
-  if (!res.ok) throw new Error(`fins/statements failed (${res.status}): ${json.message ?? 'unknown'}`)
+  return { url, status: res.status, json }
+}
+
+async function fetchStatements(idToken: string, code: string): Promise<RawStatement[]> {
+  const { status, json } = await fetchStatementsResponse(idToken, code)
+  if (status < 200 || status >= 300) {
+    throw new Error(`fins/statements failed (${status}): ${json.message ?? 'unknown'}`)
+  }
   return json.statements ?? []
 }
 
-// ── ユーティリティ ─────────────────────────────────────────────────────────
-
-function parseNum(s: string | undefined): number | null {
-  if (!s || s.trim() === '') return null
-  const n = parseFloat(s)
-  return isNaN(n) ? null : n
+function parseNum(value: string | undefined): number | null {
+  if (!value || value.trim() === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
 }
 
-/** 財務諸表の値（単位: 百万円）を億円に変換 */
-function mToOku(s: string | undefined): number | null {
-  const n = parseNum(s)
-  return n !== null ? Math.round(n / 100) : null
+function yenToOku(value: string | undefined): number | null {
+  const n = parseNum(value)
+  return n !== null ? Math.round(n / 100_000_000) : null
 }
 
-/**
- * 決算種別を判定して年換算係数を返す。
- * J-Quants の TypeOfCurrentPeriod: "Q1" | "Q2" | "2Q" | "Q3" | "3Q" | "Q4" | "FY" など
- */
 function annualFactor(typeOfPeriod: string | undefined): number {
-  if (!typeOfPeriod) return 1
-  const t = typeOfPeriod.toUpperCase()
-  if (t === 'Q1') return 4
-  if (t === 'Q2' || t === '2Q') return 2
-  if (t === 'Q3' || t === '3Q') return 4 / 3
-  return 1 // FY / Q4 / Annual
+  const t = typeOfPeriod?.toUpperCase()
+  if (t === '1Q' || t === 'Q1') return 4
+  if (t === '2Q' || t === 'Q2') return 2
+  if (t === '3Q' || t === 'Q3') return 4 / 3
+  return 1
 }
 
-// ── メイン関数 ─────────────────────────────────────────────────────────────
+function hasFinancialValues(statement: RawStatement): boolean {
+  return Boolean(
+    statement.NetSales ||
+    statement.OperatingProfit ||
+    statement.Profit ||
+    statement.EarningsPerShare ||
+    statement.ForecastEarningsPerShare ||
+    statement.Equity ||
+    statement.BookValuePerShare,
+  )
+}
 
-/**
- * J-Quants から財務指標を取得する。
- * @param code - 4桁の銘柄コード（例: "7203"）
- * @param currentPrice - Stooq から取得した現在株価（PER・PBR・配当利回り算出に使用）
- */
+function selectStatement(statements: RawStatement[]): RawStatement | null {
+  const sorted = [...statements].sort((a, b) => {
+    const dateCompare = (b.DisclosedDate ?? '').localeCompare(a.DisclosedDate ?? '')
+    if (dateCompare !== 0) return dateCompare
+    return (b.DisclosureNumber ?? '').localeCompare(a.DisclosureNumber ?? '')
+  })
+
+  const annual = sorted.find((statement) => {
+    const period = statement.TypeOfCurrentPeriod?.toUpperCase()
+    return hasFinancialValues(statement) && (period === 'FY' || period === '4Q' || period === '5Q')
+  })
+
+  return annual ?? sorted.find(hasFinancialValues) ?? sorted[0] ?? null
+}
+
+function previewStatement(statement: RawStatement | null): Record<string, unknown> | null {
+  if (!statement) return null
+  return {
+    DisclosedDate: statement.DisclosedDate,
+    LocalCode: statement.LocalCode,
+    DisclosureNumber: statement.DisclosureNumber,
+    TypeOfDocument: statement.TypeOfDocument,
+    TypeOfCurrentPeriod: statement.TypeOfCurrentPeriod,
+    NetSales: statement.NetSales,
+    OperatingProfit: statement.OperatingProfit,
+    Profit: statement.Profit,
+    EarningsPerShare: statement.EarningsPerShare,
+    ForecastEarningsPerShare: statement.ForecastEarningsPerShare,
+    Equity: statement.Equity,
+    EquityToAssetRatio: statement.EquityToAssetRatio,
+    BookValuePerShare: statement.BookValuePerShare,
+    ResultDividendPerShareAnnual: statement.ResultDividendPerShareAnnual,
+    ForecastDividendPerShareAnnual: statement.ForecastDividendPerShareAnnual,
+  }
+}
+
+export async function fetchJQuantsStatementsDebug(code: string): Promise<JQuantsStatementsDebug> {
+  const normalizedFiveDigitCode = /^\d{4}$/.test(code) ? `${code}0` : null
+  const endpoint = statementsUrl(code)
+
+  try {
+    const idToken = await getIdToken()
+    const { status, json } = await fetchStatementsResponse(idToken, code)
+    const statements = json.statements ?? []
+    const first = statements[0] ?? null
+    const selected = selectStatement(statements)
+
+    return {
+      requestedCode: code,
+      normalizedFiveDigitCode,
+      endpoint,
+      status,
+      error: status >= 200 && status < 300 ? null : json.message ?? 'request failed',
+      topLevelKeys: Object.keys(json),
+      statementsCount: statements.length,
+      firstStatementKeys: first ? Object.keys(first) : [],
+      latestStatementKeys: statements.at(-1) ? Object.keys(statements.at(-1) as RawStatement) : [],
+      selectedStatementKeys: selected ? Object.keys(selected) : [],
+      firstStatementPreview: previewStatement(first),
+      selectedStatementPreview: previewStatement(selected),
+    }
+  } catch (e) {
+    return {
+      requestedCode: code,
+      normalizedFiveDigitCode,
+      endpoint,
+      status: null,
+      error: e instanceof Error ? e.message : 'unknown',
+      topLevelKeys: [],
+      statementsCount: 0,
+      firstStatementKeys: [],
+      latestStatementKeys: [],
+      selectedStatementKeys: [],
+      firstStatementPreview: null,
+      selectedStatementPreview: null,
+    }
+  }
+}
+
 export async function fetchJQuantsFundamentals(
   code: string,
   currentPrice: number | null,
 ): Promise<JQuantsFundamentals> {
   const empty: JQuantsFundamentals = {
-    revenue: null, operatingProfit: null, equityRatio: null,
-    roe: null, per: null, pbr: null, dividendYield: null,
-    marketCap: null, disclosedDate: null,
+    revenue: null,
+    operatingProfit: null,
+    equityRatio: null,
+    roe: null,
+    per: null,
+    pbr: null,
+    dividendYield: null,
+    marketCap: null,
+    disclosedDate: null,
   }
 
   let idToken: string
@@ -182,44 +268,29 @@ export async function fetchJQuantsFundamentals(
     return { ...empty, fetchError: e instanceof Error ? e.message : 'fetch error' }
   }
 
-  if (statements.length === 0) {
-    return { ...empty, fetchError: `${code} の財務諸表が見つかりませんでした` }
+  const latest = selectStatement(statements)
+  if (!latest) {
+    return { ...empty, fetchError: `${code} statements not found` }
   }
 
-  // ── 最新の決算を選択 ──────────────────────────────────────────────
-  // 優先順位: 通期(FY) > 最新四半期
-  // J-Quants は開示日降順で返ってくることが多いが、明示的にソートする
-  const sorted = [...statements].sort((a, b) => {
-    const da = a.DisclosedDate ?? ''
-    const db = b.DisclosedDate ?? ''
-    return db.localeCompare(da) // 新しい順
-  })
-
-  const annual = sorted.find((s) => {
-    const t = (s.TypeOfCurrentPeriod ?? '').toUpperCase()
-    return t === 'FY' || t === 'Q4' || t === 'ANNUAL'
-  })
-  const latest = annual ?? sorted[0]
-
-  // ── 基本財務データ ────────────────────────────────────────────────
-  const revenue = mToOku(latest.NetSales)
-  const operatingProfit = mToOku(latest.OperatingProfit)
+  const revenue = yenToOku(latest.NetSales)
+  const operatingProfit = yenToOku(latest.OperatingProfit)
   const equityRatioRaw = parseNum(latest.EquityToAssetRatio)
   const equityRatio = equityRatioRaw !== null ? equityRatioRaw * 100 : null
 
-  // ── EPS・BPS (yen/株) ─────────────────────────────────────────────
-  const eps = parseNum(latest.EarningsPerShare)
+  const forecastEps = parseNum(latest.ForecastEarningsPerShare)
+  const actualEps = parseNum(latest.EarningsPerShare)
+  const eps = forecastEps ?? actualEps
   const bps = parseNum(latest.BookValuePerShare)
-  const periodType = latest.TypeOfCurrentPeriod
-  const factor = annualFactor(periodType)
+  const annualEps =
+    forecastEps !== null
+      ? forecastEps
+      : actualEps !== null
+        ? actualEps * annualFactor(latest.TypeOfCurrentPeriod)
+        : null
 
-  // 年換算 EPS（四半期報告の場合は係数をかける）
-  const annualEps = eps !== null ? eps * factor : null
-
-  // ── ROE (純利益 ÷ 純資産) ─────────────────────────────────────────
-  // 通期の場合は EPS/BPS で近似、四半期は単純化のため省略
-  const equity = parseNum(latest.Equity) // 百万円
-  const profit = parseNum(latest.Profit) // 百万円
+  const equity = parseNum(latest.Equity)
+  const profit = parseNum(latest.Profit)
   const roe =
     equity !== null && equity > 0 && profit !== null
       ? (profit / equity) * 100
@@ -227,7 +298,6 @@ export async function fetchJQuantsFundamentals(
         ? (eps / bps) * 100
         : null
 
-  // ── 現在株価ベースの指標 ─────────────────────────────────────────
   const per =
     currentPrice !== null && annualEps !== null && annualEps > 0
       ? currentPrice / annualEps
@@ -238,24 +308,24 @@ export async function fetchJQuantsFundamentals(
       ? currentPrice / bps
       : null
 
-  // ── 配当利回り ────────────────────────────────────────────────────
-  // 予想配当 > 実績配当 の優先順で使用
   const dividendPerShare =
-    parseNum(latest.ForecastDividendPerShareFiscalYear) ??
-    parseNum(latest.ResultDividendPerShareFiscalYear)
+    parseNum(latest.ForecastDividendPerShareAnnual) ??
+    parseNum(latest.ResultDividendPerShareAnnual) ??
+    parseNum(latest.ForecastDividendPerShareFiscalYearEnd) ??
+    parseNum(latest.ResultDividendPerShareFiscalYearEnd)
 
   const dividendYield =
     currentPrice !== null && dividendPerShare !== null && dividendPerShare > 0 && currentPrice > 0
       ? dividendPerShare / currentPrice
       : null
 
-  // ── 時価総額 ──────────────────────────────────────────────────────
-  // 発行株式数 ≈ 純資産(百万円) × 1,000,000 ÷ BPS(円/株)
-  // 時価総額(億円) = 発行株式数 × 現在株価 ÷ 1億
   let marketCap: number | null = null
-  if (equity !== null && bps !== null && bps > 0 && currentPrice !== null) {
-    const sharesOutstanding = (equity * 1_000_000) / bps
-    marketCap = Math.round((sharesOutstanding * currentPrice) / 1e8)
+  const issuedShares = parseNum(latest.NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock)
+  if (issuedShares !== null && currentPrice !== null) {
+    marketCap = Math.round((issuedShares * currentPrice) / 100_000_000)
+  } else if (equity !== null && bps !== null && bps > 0 && currentPrice !== null) {
+    const sharesOutstanding = equity / bps
+    marketCap = Math.round((sharesOutstanding * currentPrice) / 100_000_000)
   }
 
   return {

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { StockData, ApiError } from '@/lib/stockTypes'
-import { fetchJQuantsFundamentals } from '@/lib/jquants'
+import { fetchJQuantsFundamentals, fetchJQuantsStatementsDebug } from '@/lib/jquants'
 
 // 主要日本株の銘柄名テーブル
 const STOCK_NAMES: Record<string, string> = {
@@ -176,7 +176,7 @@ async function fetchPriceWithFallback(code: string): Promise<PriceResult> {
   return { price: null, changePercent: null, source: 'yahoo', debug }
 }
 
-export async function GET(request: Request): Promise<NextResponse<StockData | ApiError>> {
+export async function GET(request: Request): Promise<NextResponse<StockData | ApiError | Record<string, unknown>>> {
   const { searchParams } = new URL(request.url)
   const code = searchParams.get('code')?.replace(/\D/g, '')
 
@@ -185,6 +185,11 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
       { error: '4桁の銘柄コードを入力してください（例: 7203）' },
       { status: 400 },
     )
+  }
+
+  if (searchParams.get('debug') === '1') {
+    const jquants = await fetchJQuantsStatementsDebug(code)
+    return NextResponse.json({ code, jquants })
   }
 
   // ── Step 1: Yahoo Finance から株価取得（失敗時はStooq） ─────────────

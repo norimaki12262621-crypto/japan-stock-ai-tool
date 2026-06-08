@@ -54,13 +54,39 @@ function parseStooqCsv(csv: string): Array<Record<string, string>> {
   })
 }
 
+type PriceData = {
+  price: number | null
+  changePercent: number | null
+  source: 'yahoo' | 'stooq'
+}
+
+type PriceDebug = {
+  yahooStatus: number | string | null
+  yahooUrl: string
+  stooqStatus: number | string | null
+  stooqUrl: string
+}
+
+type PriceResult = PriceData & {
+  debug: PriceDebug
+}
+
+function stooqUrl(code: string): string {
+  const today = new Date()
+  const from = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000)
+  return `https://stooq.com/q/d/l/?s=${code}.jp&d1=${yyyymmdd(from)}&d2=${yyyymmdd(today)}&i=d`
+}
+
+function yahooUrl(code: string): string {
+  return `https://query1.finance.yahoo.com/v8/finance/chart/${code}.T?range=5d&interval=1d`
+}
+
 async function fetchStooqPrice(code: string): Promise<{
   price: number | null
   changePercent: number | null
+  status: number | string
 }> {
-  const today = new Date()
-  const from = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000)
-  const url = `https://stooq.com/q/d/l/?s=${code}.jp&d1=${yyyymmdd(from)}&d2=${yyyymmdd(today)}&i=d`
+  const url = stooqUrl(code)
 
   const res = await fetch(url, {
     headers: {
@@ -70,26 +96,84 @@ async function fetchStooqPrice(code: string): Promise<{
     },
     next: { revalidate: 60 },
   })
-  if (!res.ok) throw new Error(`Stooq returned HTTP ${res.status}`)
+  if (!res.ok) return { price: null, changePercent: null, status: res.status }
 
   const csv = await res.text()
   const rows = parseStooqCsv(csv)
 
-  const latest = rows[0]
-  const prev = rows[1]
-  if (!latest?.['Close']) return { price: null, changePercent: null }
+  const latest = rows.at(-1)
+  const prev = rows.at(-2)
+  if (!latest?.['Close']) return { price: null, changePercent: null, status: 'empty-data' }
 
   const price = parseFloat(latest['Close'])
   const prevClose = prev ? parseFloat(prev['Close']) : null
 
-  if (isNaN(price) || price <= 0) return { price: null, changePercent: null }
+  if (isNaN(price) || price <= 0) return { price: null, changePercent: null, status: 'invalid-data' }
 
   const changePercent =
     prevClose && !isNaN(prevClose) && prevClose > 0
       ? ((price - prevClose) / prevClose) * 100
       : null
 
-  return { price, changePercent }
+  return { price, changePercent, status: res.status }
+}
+
+async function fetchYahooPrice(code: string): Promise<{
+  price: number | null
+  changePercent: number | null
+  status: number | string
+}> {
+  const url = yahooUrl(code)
+
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      Accept: 'application/json,*/*',
+    },
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) return { price: null, changePercent: null, status: res.status }
+
+  const data = await res.json()
+  const meta = data?.chart?.result?.[0]?.meta
+  const price = typeof meta?.regularMarketPrice === 'number' ? meta.regularMarketPrice : null
+  const prevClose = typeof meta?.previousClose === 'number' ? meta.previousClose : null
+
+  if (!price || price <= 0) return { price: null, changePercent: null, status: 'invalid-data' }
+
+  const changePercent =
+    prevClose && prevClose > 0
+      ? ((price - prevClose) / prevClose) * 100
+      : null
+
+  return { price, changePercent, status: res.status }
+}
+
+async function fetchPriceWithFallback(code: string): Promise<PriceResult> {
+  const debug: PriceDebug = {
+    yahooStatus: null,
+    yahooUrl: yahooUrl(code),
+    stooqStatus: null,
+    stooqUrl: stooqUrl(code),
+  }
+
+  try {
+    const yahoo = await fetchYahooPrice(code)
+    debug.yahooStatus = yahoo.status
+    if (yahoo.price !== null) return { ...yahoo, source: 'yahoo', debug }
+  } catch (e) {
+    debug.yahooStatus = e instanceof Error ? e.message : 'unknown'
+  }
+
+  try {
+    const stooq = await fetchStooqPrice(code)
+    debug.stooqStatus = stooq.status
+    if (stooq.price !== null) return { ...stooq, source: 'stooq', debug }
+  } catch (e) {
+    debug.stooqStatus = e instanceof Error ? e.message : 'unknown'
+  }
+
+  return { price: null, changePercent: null, source: 'yahoo', debug }
 }
 
 export async function GET(request: Request): Promise<NextResponse<StockData | ApiError>> {
@@ -103,13 +187,17 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     )
   }
 
-  // ── Step 1: Stooq から株価取得 ──────────────────────────────────────
+  // ── Step 1: Yahoo Finance から株価取得（失敗時はStooq） ─────────────
   let price: number | null = null
   let changePercent: number | null = null
+  let priceSource: 'yahoo' | 'stooq' = 'yahoo'
+  let priceDebug: PriceDebug | null = null
   try {
-    const stooq = await fetchStooqPrice(code)
-    price = stooq.price
-    changePercent = stooq.changePercent
+    const priceData = await fetchPriceWithFallback(code)
+    price = priceData.price
+    changePercent = priceData.changePercent
+    priceSource = priceData.source
+    priceDebug = priceData.debug
   } catch (e) {
     return NextResponse.json(
       { error: `株価データの取得に失敗しました。(${e instanceof Error ? e.message : 'unknown'})` },
@@ -119,8 +207,11 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
 
   if (price === null) {
     return NextResponse.json(
-      { error: `銘柄コード ${code} のデータが見つかりませんでした。コードを確認してください。` },
-      { status: 404 },
+      {
+        error: `銘柄コード ${code} のデータが見つかりませんでした。コードを確認してください。`,
+        debug: priceDebug,
+      },
+      { status: 502 },
     )
   }
 
@@ -159,7 +250,7 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     changePercent,
     ...fundamentals,
     fetchedAt: new Date().toISOString(),
-    dataSource: hasJQuantsEnv ? 'jquants' : 'stooq',
+    dataSource: hasJQuantsEnv ? 'jquants' : priceSource,
   }
 
   return NextResponse.json(stock)

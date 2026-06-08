@@ -373,7 +373,7 @@ export async function fetchJQuantsFundamentals(
     roe,
     per: per !== null ? Math.round(per * 10) / 10 : null,
     pbr: pbr !== null ? Math.round(pbr * 100) / 100 : null,
-    dividendYield,
+    dividendYield: dividendYield !== null ? Math.round(dividendYield * 100) / 100 : null,
     marketCap,
     disclosedDate: latest.DisclosedDate ?? null,
   }

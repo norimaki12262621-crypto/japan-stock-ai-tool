@@ -1,7 +1,4 @@
-const BASE = 'https://api.jquants.com/v1'
-
-type AuthUserResponse = { refreshToken?: string; message?: string }
-type AuthRefreshResponse = { idToken?: string; message?: string }
+const BASE = 'https://api.jquants.com/v2'
 
 type RawStatement = {
   DisclosedDate?: string
@@ -10,23 +7,44 @@ type RawStatement = {
   DisclosureNumber?: string
   TypeOfDocument?: string
   TypeOfCurrentPeriod?: string
+  DiscDate?: string
+  DiscTime?: string
+  Code?: string
+  DiscNo?: string
+  DocType?: string
+  CurPerType?: string
   NetSales?: string
   OperatingProfit?: string
   Profit?: string
   EarningsPerShare?: string
   ForecastEarningsPerShare?: string
+  Sales?: string
+  OP?: string
+  NP?: string
+  EPS?: string
+  FEPS?: string
   TotalAssets?: string
   Equity?: string
   EquityToAssetRatio?: string
   BookValuePerShare?: string
+  TA?: string
+  Eq?: string
+  EqAR?: string
+  BPS?: string
   ResultDividendPerShareFiscalYearEnd?: string
   ResultDividendPerShareAnnual?: string
   ForecastDividendPerShareFiscalYearEnd?: string
   ForecastDividendPerShareAnnual?: string
+  DivFY?: string
+  DivAnn?: string
+  FDivFY?: string
+  FDivAnn?: string
   NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock?: string
+  ShOutFY?: string
 }
 
 type StatementsResponse = {
+  data?: RawStatement[]
   statements?: RawStatement[]
   message?: string
   pagination_key?: string
@@ -48,6 +66,11 @@ export type JQuantsFundamentals = {
 export type JQuantsStatementsDebug = {
   requestedCode: string
   normalizedFiveDigitCode: string | null
+  auth: {
+    method: 'x-api-key'
+    hasApiKey: boolean
+    success: boolean
+  }
   endpoint: string
   status: number | null
   error: string | null
@@ -60,78 +83,69 @@ export type JQuantsStatementsDebug = {
   selectedStatementPreview: Record<string, unknown> | null
 }
 
-let _idTokenCache: { token: string; expiresAt: number } | null = null
-
-async function fetchRefreshToken(email: string, password: string): Promise<string> {
-  const res = await fetch(`${BASE}/token/auth_user`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mailaddress: email, password }),
-    cache: 'no-store',
-  })
-  const json = await res.json() as AuthUserResponse
-  if (!res.ok || !json.refreshToken) {
-    throw new Error(`auth_user failed (${res.status}): ${json.message ?? 'unknown'}`)
-  }
-  return json.refreshToken
-}
-
-async function fetchIdToken(refreshToken: string): Promise<string> {
-  const res = await fetch(
-    `${BASE}/token/auth_refresh?refreshtoken=${encodeURIComponent(refreshToken)}`,
-    { method: 'POST', cache: 'no-store' },
-  )
-  const json = await res.json() as AuthRefreshResponse
-  if (!res.ok || !json.idToken) {
-    throw new Error(`auth_refresh failed (${res.status}): ${json.message ?? 'unknown'}`)
-  }
-  return json.idToken
-}
-
-async function getIdToken(): Promise<string> {
-  const now = Date.now()
-  if (_idTokenCache && _idTokenCache.expiresAt > now) return _idTokenCache.token
-
-  const email = process.env.JQUANTS_EMAIL
-  const password = process.env.JQUANTS_PASSWORD
-  if (!email || !password) throw new Error('JQUANTS_EMAIL / JQUANTS_PASSWORD is not set')
-
-  const refreshToken = await fetchRefreshToken(email, password)
-  const idToken = await fetchIdToken(refreshToken)
-  _idTokenCache = { token: idToken, expiresAt: now + 23 * 60 * 60 * 1000 }
-  return idToken
+function getApiKey(): string {
+  const apiKey = process.env.JQUANTS_API_KEY
+  if (!apiKey) throw new Error('JQUANTS_API_KEY is not set')
+  return apiKey
 }
 
 function statementsUrl(code: string): string {
-  return `${BASE}/fins/statements?code=${encodeURIComponent(code)}`
+  return `${BASE}/fins/summary?code=${encodeURIComponent(code)}`
 }
 
-async function fetchStatementsResponse(idToken: string, code: string): Promise<{
+async function fetchStatementsResponse(apiKey: string, code: string): Promise<{
   url: string
   status: number
   json: StatementsResponse
 }> {
   const url = statementsUrl(code)
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${idToken}` },
+    headers: { 'x-api-key': apiKey },
     next: { revalidate: 3600 },
   })
   const json = await res.json() as StatementsResponse
   return { url, status: res.status, json }
 }
 
-async function fetchStatements(idToken: string, code: string): Promise<RawStatement[]> {
-  const { status, json } = await fetchStatementsResponse(idToken, code)
+async function fetchStatements(apiKey: string, code: string): Promise<RawStatement[]> {
+  const { status, json } = await fetchStatementsResponse(apiKey, code)
   if (status < 200 || status >= 300) {
-    throw new Error(`fins/statements failed (${status}): ${json.message ?? 'unknown'}`)
+    throw new Error(`fins/summary failed (${status}): ${json.message ?? 'unknown'}`)
   }
-  return json.statements ?? []
+  return (json.data ?? json.statements ?? []).map(normalizeStatement)
 }
 
 function parseNum(value: string | undefined): number | null {
   if (!value || value.trim() === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
+}
+
+function normalizeStatement(statement: RawStatement): RawStatement {
+  return {
+    ...statement,
+    DisclosedDate: statement.DisclosedDate ?? statement.DiscDate,
+    DisclosedTime: statement.DisclosedTime ?? statement.DiscTime,
+    LocalCode: statement.LocalCode ?? statement.Code,
+    DisclosureNumber: statement.DisclosureNumber ?? statement.DiscNo,
+    TypeOfDocument: statement.TypeOfDocument ?? statement.DocType,
+    TypeOfCurrentPeriod: statement.TypeOfCurrentPeriod ?? statement.CurPerType,
+    NetSales: statement.NetSales ?? statement.Sales,
+    OperatingProfit: statement.OperatingProfit ?? statement.OP,
+    Profit: statement.Profit ?? statement.NP,
+    EarningsPerShare: statement.EarningsPerShare ?? statement.EPS,
+    ForecastEarningsPerShare: statement.ForecastEarningsPerShare ?? statement.FEPS,
+    TotalAssets: statement.TotalAssets ?? statement.TA,
+    Equity: statement.Equity ?? statement.Eq,
+    EquityToAssetRatio: statement.EquityToAssetRatio ?? statement.EqAR,
+    BookValuePerShare: statement.BookValuePerShare ?? statement.BPS,
+    ResultDividendPerShareFiscalYearEnd: statement.ResultDividendPerShareFiscalYearEnd ?? statement.DivFY,
+    ResultDividendPerShareAnnual: statement.ResultDividendPerShareAnnual ?? statement.DivAnn,
+    ForecastDividendPerShareFiscalYearEnd: statement.ForecastDividendPerShareFiscalYearEnd ?? statement.FDivFY,
+    ForecastDividendPerShareAnnual: statement.ForecastDividendPerShareAnnual ?? statement.FDivAnn,
+    NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock:
+      statement.NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock ?? statement.ShOutFY,
+  }
 }
 
 function yenToOku(value: string | undefined): number | null {
@@ -198,24 +212,31 @@ function previewStatement(statement: RawStatement | null): Record<string, unknow
 export async function fetchJQuantsStatementsDebug(code: string): Promise<JQuantsStatementsDebug> {
   const normalizedFiveDigitCode = /^\d{4}$/.test(code) ? `${code}0` : null
   const endpoint = statementsUrl(code)
+  const hasApiKey = Boolean(process.env.JQUANTS_API_KEY)
 
   try {
-    const idToken = await getIdToken()
-    const { status, json } = await fetchStatementsResponse(idToken, code)
-    const statements = json.statements ?? []
-    const first = statements[0] ?? null
+    const apiKey = getApiKey()
+    const { status, json } = await fetchStatementsResponse(apiKey, code)
+    const rawStatements = json.data ?? json.statements ?? []
+    const statements = rawStatements.map(normalizeStatement)
+    const first = rawStatements[0] ?? null
     const selected = selectStatement(statements)
 
     return {
       requestedCode: code,
       normalizedFiveDigitCode,
+      auth: {
+        method: 'x-api-key',
+        hasApiKey,
+        success: status >= 200 && status < 300,
+      },
       endpoint,
       status,
       error: status >= 200 && status < 300 ? null : json.message ?? 'request failed',
       topLevelKeys: Object.keys(json),
-      statementsCount: statements.length,
+      statementsCount: rawStatements.length,
       firstStatementKeys: first ? Object.keys(first) : [],
-      latestStatementKeys: statements.at(-1) ? Object.keys(statements.at(-1) as RawStatement) : [],
+      latestStatementKeys: rawStatements.at(-1) ? Object.keys(rawStatements.at(-1) as RawStatement) : [],
       selectedStatementKeys: selected ? Object.keys(selected) : [],
       firstStatementPreview: previewStatement(first),
       selectedStatementPreview: previewStatement(selected),
@@ -224,6 +245,11 @@ export async function fetchJQuantsStatementsDebug(code: string): Promise<JQuants
     return {
       requestedCode: code,
       normalizedFiveDigitCode,
+      auth: {
+        method: 'x-api-key',
+        hasApiKey,
+        success: false,
+      },
       endpoint,
       status: null,
       error: e instanceof Error ? e.message : 'unknown',
@@ -254,16 +280,16 @@ export async function fetchJQuantsFundamentals(
     disclosedDate: null,
   }
 
-  let idToken: string
+  let apiKey: string
   try {
-    idToken = await getIdToken()
+    apiKey = getApiKey()
   } catch (e) {
     return { ...empty, fetchError: e instanceof Error ? e.message : 'auth error' }
   }
 
   let statements: RawStatement[]
   try {
-    statements = await fetchStatements(idToken, code)
+    statements = await fetchStatements(apiKey, code)
   } catch (e) {
     return { ...empty, fetchError: e instanceof Error ? e.message : 'fetch error' }
   }

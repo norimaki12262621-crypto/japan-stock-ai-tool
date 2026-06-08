@@ -221,7 +221,7 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
   }
 
   // ── Step 2: J-Quants から財務指標取得（env未設定なら全部null） ──────
-  const hasJQuantsEnv = !!(process.env.JQUANTS_EMAIL && process.env.JQUANTS_PASSWORD)
+  const hasJQuantsEnv = !!process.env.JQUANTS_API_KEY
 
   let fundamentals = {
     per: null as number | null,

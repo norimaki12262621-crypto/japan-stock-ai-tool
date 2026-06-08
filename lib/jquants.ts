@@ -148,9 +148,18 @@ function normalizeStatement(statement: RawStatement): RawStatement {
   }
 }
 
-function yenToOku(value: string | undefined): number | null {
+function amountToYen(value: string | undefined): number | null {
   const n = parseNum(value)
-  return n !== null ? Math.round(n / 100_000_000) : null
+  if (n === null) return null
+
+  // J-Quants v2 summary values may be yen-scale or million-yen-scale,
+  // depending on the source field. Large values are treated as yen.
+  return Math.abs(n) >= 1_000_000_000_000 ? n : n * 1_000_000
+}
+
+function amountToOku(value: string | undefined): number | null {
+  const yen = amountToYen(value)
+  return yen !== null ? Math.round(yen / 100_000_000) : null
 }
 
 function annualFactor(typeOfPeriod: string | undefined): number {
@@ -299,8 +308,8 @@ export async function fetchJQuantsFundamentals(
     return { ...empty, fetchError: `${code} statements not found` }
   }
 
-  const revenue = yenToOku(latest.NetSales)
-  const operatingProfit = yenToOku(latest.OperatingProfit)
+  const revenue = amountToOku(latest.NetSales)
+  const operatingProfit = amountToOku(latest.OperatingProfit)
   const equityRatioRaw = parseNum(latest.EquityToAssetRatio)
   const equityRatio = equityRatioRaw !== null ? equityRatioRaw * 100 : null
 
@@ -342,7 +351,7 @@ export async function fetchJQuantsFundamentals(
 
   const dividendYield =
     currentPrice !== null && dividendPerShare !== null && dividendPerShare > 0 && currentPrice > 0
-      ? dividendPerShare / currentPrice
+      ? (dividendPerShare / currentPrice) * 100
       : null
 
   let marketCap: number | null = null
@@ -350,8 +359,11 @@ export async function fetchJQuantsFundamentals(
   if (issuedShares !== null && currentPrice !== null) {
     marketCap = Math.round((issuedShares * currentPrice) / 100_000_000)
   } else if (equity !== null && bps !== null && bps > 0 && currentPrice !== null) {
-    const sharesOutstanding = equity / bps
-    marketCap = Math.round((sharesOutstanding * currentPrice) / 100_000_000)
+    const equityYen = amountToYen(latest.Equity)
+    const sharesOutstanding = equityYen !== null ? equityYen / bps : null
+    if (sharesOutstanding !== null) {
+      marketCap = Math.round((sharesOutstanding * currentPrice) / 100_000_000)
+    }
   }
 
   return {

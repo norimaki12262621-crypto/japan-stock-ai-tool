@@ -221,7 +221,7 @@ export default function Home() {
                     { label: 'PER',          value: s.per !== null ? `${s.per.toFixed(1)}倍` : '—', status: s.per !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: 'PBR',          value: s.pbr !== null ? `${s.pbr.toFixed(2)}倍` : '—', status: s.pbr !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: 'ROE',          value: s.roe !== null ? `${s.roe.toFixed(1)}%` : '—',  status: s.roe !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
-                    { label: '配当利回り',   value: s.dividendYield !== null ? `${(s.dividendYield * 100).toFixed(2)}%` : '—', status: s.dividendYield !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: '配当利回り',   value: s.dividendYield !== null ? `${s.dividendYield.toFixed(2)}%` : '—', status: s.dividendYield !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: '時価総額',     value: fmt(s.marketCap, '億円'), status: s.marketCap !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants（算出）' : pendingNote },
                     { label: '売上高',       value: fmt(s.revenue, '億円'), status: s.revenue !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: '営業利益',     value: fmt(s.operatingProfit, '億円'), status: s.operatingProfit !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },

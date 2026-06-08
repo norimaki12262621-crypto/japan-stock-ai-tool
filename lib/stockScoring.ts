@@ -45,7 +45,7 @@ function scoreROE(roe: number | null): ScoreDetail {
 function scoreDividend(dividendYield: number | null): ScoreDetail {
   const max = 20
   if (dividendYield === null) return { label: '配当利回り', value: 'データなし', score: 0, maxScore: max, comment: '未取得（Ver2対応予定）', dataSource: 'unavailable' }
-  const pct = dividendYield * 100
+  const pct = dividendYield
   let score: number
   let comment: string
   if (pct >= 4.0)     { score = 20; comment = '高配当。インカム面で魅力的です' }

@@ -61,6 +61,59 @@ function StockCard({ stock }: { stock: StockData }) {
   )
 }
 
+function TechnicalCard({ stock }: { stock: StockData }) {
+  const techRows = [
+    { label: '25日移動平均', value: fmt(stock.ma25, '円') },
+    { label: '75日移動平均', value: fmt(stock.ma75, '円') },
+    { label: 'RSI(14)', value: stock.rsi14 !== null ? `${stock.rsi14.toFixed(1)}` : '—' },
+    { label: '20日平均出来高', value: fmt(stock.avgVolume20) },
+    { label: '現在出来高', value: fmt(stock.currentVolume) },
+    { label: '52週高値', value: fmt(stock.week52High, '円') },
+    { label: '52週安値', value: fmt(stock.week52Low, '円') },
+    { label: '52週高値との差', value: stock.diffFrom52WeekHighPercent !== null ? `${stock.diffFrom52WeekHighPercent.toFixed(2)}%` : '—' },
+    { label: '52週安値との差', value: stock.diffFrom52WeekLowPercent !== null ? `+${stock.diffFrom52WeekLowPercent.toFixed(2)}%` : '—' },
+  ]
+
+  return (
+    <div className="bg-white rounded-3xl p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <p className="text-xs font-black text-gray-400 mb-1">短期評価</p>
+          <h3 className="text-lg font-black text-gray-900">テクニカル分析 Ver3</h3>
+          <p className="text-xs text-gray-500 mt-1">{stock.buyTiming ?? '短期データを取得できませんでした。'}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-3xl font-black text-slate-900">{stock.technicalScore ?? '—'}</p>
+          <p className="text-xs font-bold text-emerald-600">{stock.technicalRating ?? '判定なし'}</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+        {techRows.map((row) => (
+          <div key={row.label} className="flex justify-between items-center py-1.5 border-b border-gray-50">
+            <span className="text-gray-600 font-medium">{row.label}</span>
+            <span className="font-bold text-gray-900">{row.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MarketSessionCard({ stock }: { stock: StockData }) {
+  const session = stock.marketSession
+  const color = session.status === 'open' ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : session.status === 'break' ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-gray-700 bg-gray-50 border-gray-200'
+
+  return (
+    <div className={`rounded-2xl border px-4 py-3 text-sm ${color}`}>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+        <span className="font-black">日本株市場時間: {session.label}</span>
+        <span className="text-xs font-bold">{session.nextSession}</span>
+      </div>
+      <p className="mt-1 text-xs opacity-80">前場 9:00〜11:30 / 後場 12:30〜15:30 / 休場 土日祝</p>
+    </div>
+  )
+}
+
 export default function Home() {
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
@@ -184,6 +237,16 @@ export default function Home() {
               </div>
               <StockCard stock={result.stock} />
             </div>
+
+            <MarketSessionCard stock={result.stock} />
+
+            <div className="bg-white rounded-3xl p-5 shadow-sm">
+              <p className="text-xs font-black text-gray-400 mb-1">長期評価</p>
+              <h3 className="text-lg font-black text-gray-900 mb-2">ファンダメンタル分析</h3>
+              <p className="text-sm text-gray-600">{result.summary}</p>
+            </div>
+
+            <TechnicalCard stock={result.stock} />
 
             {/* スコア詳細 */}
             <div className="bg-white rounded-3xl p-5 shadow-sm">

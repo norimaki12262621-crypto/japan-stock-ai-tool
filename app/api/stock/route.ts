@@ -71,14 +71,31 @@ type PriceResult = PriceData & {
   debug: PriceDebug
 }
 
+type TechnicalData = {
+  ma25: number | null
+  ma75: number | null
+  rsi14: number | null
+  avgVolume20: number | null
+  currentVolume: number | null
+  week52High: number | null
+  week52Low: number | null
+  diffFrom52WeekHighPercent: number | null
+  diffFrom52WeekLowPercent: number | null
+  technicalScore: number | null
+  technicalRating: string | null
+  buyTiming: string | null
+}
+
+type MarketSession = StockData['marketSession']
+
 function stooqUrl(code: string): string {
   const today = new Date()
   const from = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000)
   return `https://stooq.com/q/d/l/?s=${code}.jp&d1=${yyyymmdd(from)}&d2=${yyyymmdd(today)}&i=d`
 }
 
-function yahooUrl(code: string): string {
-  return `https://query1.finance.yahoo.com/v8/finance/chart/${code}.T?range=5d&interval=1d`
+function yahooUrl(code: string, range = '5d'): string {
+  return `https://query1.finance.yahoo.com/v8/finance/chart/${code}.T?range=${range}&interval=1d`
 }
 
 async function fetchStooqPrice(code: string): Promise<{
@@ -176,6 +193,206 @@ async function fetchPriceWithFallback(code: string): Promise<PriceResult> {
   return { price: null, changePercent: null, source: 'yahoo', debug }
 }
 
+function round(value: number, digits = 2): number {
+  const factor = 10 ** digits
+  return Math.round(value * factor) / factor
+}
+
+function average(values: number[]): number | null {
+  if (values.length === 0) return null
+  return values.reduce((sum, value) => sum + value, 0) / values.length
+}
+
+function movingAverage(values: number[], days: number): number | null {
+  if (values.length < days) return null
+  return average(values.slice(-days))
+}
+
+function rsi(values: number[], period = 14): number | null {
+  if (values.length <= period) return null
+  const slice = values.slice(-(period + 1))
+  let gains = 0
+  let losses = 0
+
+  for (let i = 1; i < slice.length; i += 1) {
+    const diff = slice[i] - slice[i - 1]
+    if (diff >= 0) gains += diff
+    else losses += Math.abs(diff)
+  }
+
+  const avgGain = gains / period
+  const avgLoss = losses / period
+  if (avgLoss === 0) return 100
+  const rs = avgGain / avgLoss
+  return 100 - (100 / (1 + rs))
+}
+
+function scoreTechnical(input: {
+  price: number
+  ma25: number | null
+  ma75: number | null
+  rsi14: number | null
+  avgVolume20: number | null
+  currentVolume: number | null
+  diffFrom52WeekHighPercent: number | null
+  diffFrom52WeekLowPercent: number | null
+}): { technicalScore: number; technicalRating: string; buyTiming: string } {
+  let score = 50
+
+  if (input.ma25 !== null) score += input.price >= input.ma25 ? 12 : -10
+  if (input.ma75 !== null) score += input.price >= input.ma75 ? 10 : -10
+  if (input.ma25 !== null && input.ma75 !== null) score += input.ma25 >= input.ma75 ? 10 : -8
+
+  if (input.rsi14 !== null) {
+    if (input.rsi14 >= 45 && input.rsi14 <= 65) score += 10
+    else if (input.rsi14 > 65 && input.rsi14 <= 75) score += 4
+    else if (input.rsi14 < 35) score -= 8
+    else if (input.rsi14 > 75) score -= 10
+  }
+
+  if (input.diffFrom52WeekHighPercent !== null) {
+    if (input.diffFrom52WeekHighPercent >= -10) score += 8
+    else if (input.diffFrom52WeekHighPercent < -30) score -= 8
+  }
+
+  if (input.diffFrom52WeekLowPercent !== null) {
+    if (input.diffFrom52WeekLowPercent > 80) score += 4
+    else if (input.diffFrom52WeekLowPercent < 20) score -= 6
+  }
+
+  if (input.avgVolume20 !== null && input.currentVolume !== null && input.avgVolume20 > 0) {
+    score += input.currentVolume >= input.avgVolume20 ? 6 : -3
+  }
+
+  const technicalScore = Math.max(0, Math.min(100, Math.round(score)))
+  if (technicalScore >= 80) return { technicalScore, technicalRating: '強い買い ◎', buyTiming: '上昇トレンドが強く、短期の買いタイミングは良好です。' }
+  if (technicalScore >= 65) return { technicalScore, technicalRating: '買い ○', buyTiming: '買い候補です。押し目や出来高の増加を確認したい局面です。' }
+  if (technicalScore >= 50) return { technicalScore, technicalRating: '中立 △', buyTiming: '方向感は中立です。25日線とRSIの改善を待ちたい局面です。' }
+  if (technicalScore >= 35) return { technicalScore, technicalRating: '様子見 △', buyTiming: '短期の勢いは弱めです。反転確認まで様子見が無難です。' }
+  return { technicalScore, technicalRating: '見送り ×', buyTiming: '短期の買い材料は乏しく、今は見送り優先です。' }
+}
+
+async function fetchTechnicalData(code: string, currentPrice: number | null): Promise<TechnicalData> {
+  const empty: TechnicalData = {
+    ma25: null,
+    ma75: null,
+    rsi14: null,
+    avgVolume20: null,
+    currentVolume: null,
+    week52High: null,
+    week52Low: null,
+    diffFrom52WeekHighPercent: null,
+    diffFrom52WeekLowPercent: null,
+    technicalScore: null,
+    technicalRating: null,
+    buyTiming: null,
+  }
+
+  try {
+    const res = await fetch(yahooUrl(code, '1y'), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        Accept: 'application/json,*/*',
+      },
+      next: { revalidate: 60 },
+    })
+    if (!res.ok) return empty
+
+    const data = await res.json()
+    const result = data?.chart?.result?.[0]
+    const quote = result?.indicators?.quote?.[0]
+    const closes = Array.isArray(quote?.close)
+      ? quote.close.filter((value: unknown): value is number => typeof value === 'number' && Number.isFinite(value))
+      : []
+    const highs = Array.isArray(quote?.high)
+      ? quote.high.filter((value: unknown): value is number => typeof value === 'number' && Number.isFinite(value))
+      : []
+    const lows = Array.isArray(quote?.low)
+      ? quote.low.filter((value: unknown): value is number => typeof value === 'number' && Number.isFinite(value))
+      : []
+    const volumes = Array.isArray(quote?.volume)
+      ? quote.volume.filter((value: unknown): value is number => typeof value === 'number' && Number.isFinite(value))
+      : []
+
+    const price = currentPrice ?? closes.at(-1) ?? null
+    if (price === null) return empty
+
+    const ma25 = movingAverage(closes, 25)
+    const ma75 = movingAverage(closes, 75)
+    const rsi14 = rsi(closes, 14)
+    const avgVolume20 = volumes.length >= 20 ? average(volumes.slice(-20)) : null
+    const currentVolume =
+      typeof result?.meta?.regularMarketVolume === 'number'
+        ? result.meta.regularMarketVolume
+        : volumes.at(-1) ?? null
+    const week52High = highs.length > 0 ? Math.max(...highs) : null
+    const week52Low = lows.length > 0 ? Math.min(...lows) : null
+    const diffFrom52WeekHighPercent = week52High && week52High > 0 ? ((price - week52High) / week52High) * 100 : null
+    const diffFrom52WeekLowPercent = week52Low && week52Low > 0 ? ((price - week52Low) / week52Low) * 100 : null
+    const scored = scoreTechnical({
+      price,
+      ma25,
+      ma75,
+      rsi14,
+      avgVolume20,
+      currentVolume,
+      diffFrom52WeekHighPercent,
+      diffFrom52WeekLowPercent,
+    })
+
+    return {
+      ma25: ma25 !== null ? round(ma25, 1) : null,
+      ma75: ma75 !== null ? round(ma75, 1) : null,
+      rsi14: rsi14 !== null ? round(rsi14, 1) : null,
+      avgVolume20: avgVolume20 !== null ? Math.round(avgVolume20) : null,
+      currentVolume,
+      week52High: week52High !== null ? round(week52High, 1) : null,
+      week52Low: week52Low !== null ? round(week52Low, 1) : null,
+      diffFrom52WeekHighPercent: diffFrom52WeekHighPercent !== null ? round(diffFrom52WeekHighPercent, 2) : null,
+      diffFrom52WeekLowPercent: diffFrom52WeekLowPercent !== null ? round(diffFrom52WeekLowPercent, 2) : null,
+      ...scored,
+    }
+  } catch {
+    return empty
+  }
+}
+
+function isJapaneseMarketHoliday(date: Date): boolean {
+  const day = date.getDay()
+  if (day === 0 || day === 6) return true
+
+  const month = date.getMonth() + 1
+  const dateOfMonth = date.getDate()
+  const ymd = `${date.getFullYear()}-${String(month).padStart(2, '0')}-${String(dateOfMonth).padStart(2, '0')}`
+  const holidays2026 = new Set([
+    '2026-01-01', '2026-01-12', '2026-02-11', '2026-02-23', '2026-03-20',
+    '2026-04-29', '2026-05-04', '2026-05-05', '2026-05-06', '2026-07-20',
+    '2026-08-11', '2026-09-21', '2026-09-22', '2026-09-23', '2026-10-12',
+    '2026-11-03', '2026-11-23',
+  ])
+  return holidays2026.has(ymd)
+}
+
+function getMarketSession(now = new Date()): MarketSession {
+  const tokyo = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }))
+  const minutes = tokyo.getHours() * 60 + tokyo.getMinutes()
+  const isHoliday = isJapaneseMarketHoliday(tokyo)
+
+  if (isHoliday) {
+    return { status: 'closed', label: '休場（土日祝）', nextSession: '次の営業日 9:00 前場開始', isHoliday: true }
+  }
+  if (minutes >= 9 * 60 && minutes < 11 * 60 + 30) {
+    return { status: 'open', label: '前場 9:00〜11:30', nextSession: '11:30 昼休み', isHoliday: false }
+  }
+  if (minutes >= 11 * 60 + 30 && minutes < 12 * 60 + 30) {
+    return { status: 'break', label: '昼休み 11:30〜12:30', nextSession: '12:30 後場開始', isHoliday: false }
+  }
+  if (minutes >= 12 * 60 + 30 && minutes < 15 * 60 + 30) {
+    return { status: 'open', label: '後場 12:30〜15:30', nextSession: '15:30 大引け', isHoliday: false }
+  }
+  return { status: 'closed', label: '時間外', nextSession: '次の営業日 9:00 前場開始', isHoliday: false }
+}
+
 export async function GET(request: Request): Promise<NextResponse<StockData | ApiError | Record<string, unknown>>> {
   const { searchParams } = new URL(request.url)
   const code = searchParams.get('code')?.replace(/\D/g, '')
@@ -248,12 +465,17 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     }
   }
 
+  const technical = await fetchTechnicalData(code, price)
+  const marketSession = getMarketSession()
+
   const stock: StockData = {
     code,
     name: STOCK_NAMES[code] ?? code,
     price,
     changePercent,
     ...fundamentals,
+    ...technical,
+    marketSession,
     fetchedAt: new Date().toISOString(),
     dataSource: hasJQuantsEnv ? 'jquants' : priceSource,
   }

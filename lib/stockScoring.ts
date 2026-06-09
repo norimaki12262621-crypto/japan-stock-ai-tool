@@ -30,7 +30,7 @@ function scorePBR(pbr: number | null): ScoreDetail {
 function scoreROE(roe: number | null): ScoreDetail {
   const max = 25
   if (roe === null) return { label: 'ROE', value: 'データなし', score: 0, maxScore: max, comment: '未取得（Ver2対応予定）', dataSource: 'unavailable' }
-  const pct = roe * 100
+  const pct = roe
   let score: number
   let comment: string
   if (pct >= 20)      { score = 25; comment = '優秀。高い資本効率を維持しています' }

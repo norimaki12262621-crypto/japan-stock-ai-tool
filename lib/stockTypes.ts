@@ -23,6 +23,24 @@ export type StockData = {
   operatingProfit: number | null
   /** 自己資本比率 (%) — 計算値（総資産・自己資本から算出） */
   equityRatio: number | null
+  ma25: number | null
+  ma75: number | null
+  rsi14: number | null
+  avgVolume20: number | null
+  currentVolume: number | null
+  week52High: number | null
+  week52Low: number | null
+  diffFrom52WeekHighPercent: number | null
+  diffFrom52WeekLowPercent: number | null
+  technicalScore: number | null
+  technicalRating: string | null
+  buyTiming: string | null
+  marketSession: {
+    status: 'open' | 'break' | 'closed'
+    label: string
+    nextSession: string
+    isHoliday: boolean
+  }
   /** データ取得日時 */
   fetchedAt: string
   /** データソース識別子 */

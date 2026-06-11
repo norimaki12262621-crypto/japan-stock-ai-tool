@@ -29,7 +29,16 @@ function scorePBR(pbr: number | null): ScoreDetail {
 
 function scoreROE(roe: number | null): ScoreDetail {
   const max = 25
-  if (roe === null) return { label: 'ROE', value: 'データなし', score: 0, maxScore: max, comment: '未取得（Ver2対応予定）', dataSource: 'unavailable' }
+  if (roe === null || !Number.isFinite(roe) || roe < -100 || roe > 100) {
+    return {
+      label: 'ROE',
+      value: '算出不可',
+      score: 0,
+      maxScore: max,
+      comment: 'データ欠損または異常値の可能性があるため、総合スコアから除外しました',
+      dataSource: 'unavailable',
+    }
+  }
   const pct = roe
   let score: number
   let comment: string

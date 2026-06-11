@@ -2,8 +2,7 @@
 
 import { useState } from 'react'
 import { diagnose } from '@/lib/stockScoring'
-import type { DiagnosisResult } from '@/lib/stockTypes'
-import type { StockData } from '@/lib/stockTypes'
+import type { ChartHistoryPoint, DiagnosisResult, StockData } from '@/lib/stockTypes'
 
 const JUDGMENT_STYLE = {
   買い候補: { bg: 'bg-emerald-50', border: 'border-emerald-400', text: 'text-emerald-700', badge: 'bg-emerald-500', icon: '📈' },
@@ -62,16 +61,17 @@ function StockCard({ stock }: { stock: StockData }) {
 }
 
 function TechnicalCard({ stock }: { stock: StockData }) {
+  const technical = stock.technicalAnalysis
   const techRows = [
-    { label: '25日移動平均', value: fmt(stock.ma25, '円') },
-    { label: '75日移動平均', value: fmt(stock.ma75, '円') },
-    { label: 'RSI(14)', value: stock.rsi14 !== null ? `${stock.rsi14.toFixed(1)}` : '—' },
-    { label: '20日平均出来高', value: fmt(stock.avgVolume20) },
-    { label: '現在出来高', value: fmt(stock.currentVolume) },
-    { label: '52週高値', value: fmt(stock.week52High, '円') },
-    { label: '52週安値', value: fmt(stock.week52Low, '円') },
-    { label: '52週高値との差', value: stock.diffFrom52WeekHighPercent !== null ? `${stock.diffFrom52WeekHighPercent.toFixed(2)}%` : '—' },
-    { label: '52週安値との差', value: stock.diffFrom52WeekLowPercent !== null ? `+${stock.diffFrom52WeekLowPercent.toFixed(2)}%` : '—' },
+    { label: '25日移動平均', value: fmt(technical.ma25, '円') },
+    { label: '75日移動平均', value: fmt(technical.ma75, '円') },
+    { label: 'RSI(14)', value: technical.rsi14 !== null ? `${technical.rsi14.toFixed(1)}` : '—' },
+    { label: '20日平均出来高', value: fmt(technical.avgVolume20) },
+    { label: '現在出来高', value: fmt(technical.currentVolume) },
+    { label: '52週高値', value: fmt(technical.week52High, '円') },
+    { label: '52週安値', value: fmt(technical.week52Low, '円') },
+    { label: '52週高値との差', value: technical.diffFrom52WeekHighPercent !== null ? `${technical.diffFrom52WeekHighPercent.toFixed(2)}%` : '—' },
+    { label: '52週安値との差', value: technical.diffFrom52WeekLowPercent !== null ? `+${technical.diffFrom52WeekLowPercent.toFixed(2)}%` : '—' },
   ]
 
   return (
@@ -80,11 +80,11 @@ function TechnicalCard({ stock }: { stock: StockData }) {
         <div>
           <p className="text-xs font-black text-gray-400 mb-1">短期評価</p>
           <h3 className="text-lg font-black text-gray-900">テクニカル分析 Ver3</h3>
-          <p className="text-xs text-gray-500 mt-1">{stock.buyTiming ?? '短期データを取得できませんでした。'}</p>
+          <p className="text-xs text-gray-500 mt-1">{technical.buyTiming ?? '短期データを取得できませんでした。'}</p>
         </div>
         <div className="text-right">
-          <p className="text-3xl font-black text-slate-900">{stock.technicalScore ?? '—'}</p>
-          <p className="text-xs font-bold text-emerald-600">{stock.technicalRating ?? '判定なし'}</p>
+          <p className="text-3xl font-black text-slate-900">{technical.technicalScore ?? '—'}</p>
+          <p className="text-xs font-bold text-emerald-600">{technical.technicalRating ?? '判定なし'}</p>
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
@@ -94,6 +94,116 @@ function TechnicalCard({ stock }: { stock: StockData }) {
             <span className="font-bold text-gray-900">{row.value}</span>
           </div>
         ))}
+      </div>
+      {technical.comments.length > 0 && (
+        <div className="mt-4 border-t border-gray-100 pt-3 space-y-1.5">
+          {technical.comments.map((comment) => (
+            <p key={comment} className="text-xs leading-relaxed text-gray-600">・{comment}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StockChartCard({ stock }: { stock: StockData }) {
+  const history = stock.chartHistory ?? []
+  if (history.length < 2) {
+    return (
+      <div className="bg-white rounded-3xl p-5 shadow-sm">
+        <h3 className="text-lg font-black text-gray-900">株価チャート</h3>
+        <p className="mt-3 text-sm text-gray-500">チャートデータ取得不可</p>
+      </div>
+    )
+  }
+
+  const width = 720
+  const height = 300
+  const padding = { top: 20, right: 16, bottom: 34, left: 56 }
+  const plotWidth = width - padding.left - padding.right
+  const plotHeight = height - padding.top - padding.bottom
+  const values = history.flatMap((point) =>
+    [point.close, point.ma25, point.ma75].filter((value): value is number => value !== null),
+  )
+  const rawMin = Math.min(...values)
+  const rawMax = Math.max(...values)
+  const pricePadding = Math.max((rawMax - rawMin) * 0.08, rawMax * 0.01)
+  const minPrice = rawMin - pricePadding
+  const maxPrice = rawMax + pricePadding
+  const priceRange = Math.max(maxPrice - minPrice, 1)
+  const x = (index: number) => padding.left + (index / (history.length - 1)) * plotWidth
+  const y = (value: number) => padding.top + ((maxPrice - value) / priceRange) * plotHeight
+
+  const makePath = (select: (point: ChartHistoryPoint) => number | null) => {
+    let drawing = false
+    return history.map((point, index) => {
+      const value = select(point)
+      if (value === null) {
+        drawing = false
+        return ''
+      }
+      const command = drawing ? 'L' : 'M'
+      drawing = true
+      return `${command}${x(index).toFixed(1)},${y(value).toFixed(1)}`
+    }).join(' ')
+  }
+
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+  const dateIndexes = [0, Math.floor((history.length - 1) / 2), history.length - 1]
+  const formatDate = (date: string) => {
+    const [, month, day] = date.split('-')
+    return `${Number(month)}/${Number(day)}`
+  }
+
+  return (
+    <div className="bg-white rounded-3xl p-5 shadow-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+        <div>
+          <p className="text-xs font-black text-gray-400 mb-1">過去1年の日足</p>
+          <h3 className="text-lg font-black text-gray-900">株価チャート</h3>
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-bold text-gray-600">
+          <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-slate-900" />終値</span>
+          <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-emerald-500" />25日線</span>
+          <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-amber-500" />75日線</span>
+        </div>
+      </div>
+      <div className="w-full overflow-hidden">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label={`${stock.name}の過去1年の株価チャート`}
+          className="block w-full h-auto"
+        >
+          <rect x={padding.left} y={padding.top} width={plotWidth} height={plotHeight} fill="#f8fafc" />
+          {gridLines.map((ratio) => {
+            const gridY = padding.top + ratio * plotHeight
+            const priceLabel = maxPrice - ratio * priceRange
+            return (
+              <g key={ratio}>
+                <line x1={padding.left} x2={width - padding.right} y1={gridY} y2={gridY} stroke="#e2e8f0" strokeWidth="1" />
+                <text x={padding.left - 8} y={gridY + 4} textAnchor="end" fontSize="11" fill="#64748b">
+                  {Math.round(priceLabel).toLocaleString('ja-JP')}
+                </text>
+              </g>
+            )
+          })}
+          <path d={makePath((point) => point.close)} fill="none" stroke="#0f172a" strokeWidth="2.5" strokeLinejoin="round" />
+          <path d={makePath((point) => point.ma25)} fill="none" stroke="#10b981" strokeWidth="2" strokeLinejoin="round" />
+          <path d={makePath((point) => point.ma75)} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinejoin="round" />
+          {dateIndexes.map((index) => (
+            <text
+              key={index}
+              x={x(index)}
+              y={height - 10}
+              textAnchor={index === 0 ? 'start' : index === history.length - 1 ? 'end' : 'middle'}
+              fontSize="11"
+              fill="#64748b"
+            >
+              {formatDate(history[index].date)}
+            </text>
+          ))}
+        </svg>
       </div>
     </div>
   )
@@ -122,15 +232,15 @@ export default function Home() {
 
   const handleAnalyze = async () => {
     const trimmed = code.trim()
-    if (!/^\d{4}$/.test(trimmed)) {
-      setError('4桁の銘柄コードを入力してください（例: 7203）')
+    if (!trimmed) {
+      setError('銘柄コードまたは社名を入力してください')
       return
     }
     setError('')
     setLoading(true)
     setResult(null)
     try {
-      const res = await fetch(`/api/stock?code=${trimmed}`)
+      const res = await fetch(`/api/stock?code=${encodeURIComponent(trimmed)}`)
       const data = await res.json()
       if (!res.ok) {
         setError(data.error ?? 'エラーが発生しました')
@@ -160,7 +270,7 @@ export default function Home() {
       {/* ヒーロー */}
       <section className="max-w-2xl mx-auto px-4 pt-10 pb-6 text-center">
         <h1 className="text-3xl sm:text-4xl font-black text-white leading-tight">
-          銘柄コードを入れるだけで<br />
+          銘柄コード・社名を入れるだけで<br />
           <span className="text-emerald-400">AI が株を100点採点</span>
         </h1>
         <p className="mt-3 text-slate-300 text-sm">PER・PBR・ROE・配当など5指標を総合分析して「買い候補/様子見/危険」を判定</p>
@@ -170,16 +280,15 @@ export default function Home() {
 
         {/* 入力エリア */}
         <div className="bg-white rounded-3xl shadow-xl p-6">
-          <label className="block text-sm font-bold text-gray-600 mb-2">銘柄コード（4桁）</label>
+          <label className="block text-sm font-bold text-gray-600 mb-2">銘柄コード・社名</label>
           <div className="flex gap-3">
             <input
               type="text"
               value={code}
-              onChange={(e) => { setCode(e.target.value.replace(/[^0-9]/g, '')); setError('') }}
+              onChange={(e) => { setCode(e.target.value); setError('') }}
               onKeyDown={(e) => e.key === 'Enter' && !loading && handleAnalyze()}
-              placeholder="例：7203"
-              maxLength={4}
-              className="flex-1 h-12 border-2 border-gray-200 rounded-2xl px-4 text-lg font-mono font-bold text-center focus:border-blue-500 focus:outline-none transition-colors"
+              placeholder="例：7203 または トヨタ"
+              className="flex-1 min-w-0 h-12 border-2 border-gray-200 rounded-2xl px-4 text-base font-bold focus:border-blue-500 focus:outline-none transition-colors"
             />
             <button
               onClick={handleAnalyze}
@@ -190,7 +299,7 @@ export default function Home() {
             </button>
           </div>
           {error && <p className="mt-2 text-sm text-red-500">⚠️ {error}</p>}
-          <p className="mt-2 text-xs text-gray-400">例: 7203（トヨタ）/ 9984（ソフトバンクG）/ 6758（ソニー）</p>
+          <p className="mt-2 text-xs text-gray-400">例: 7203 / トヨタ / ソニー / 三菱重工 / フジクラ</p>
         </div>
 
         {/* ローディング */}
@@ -240,6 +349,8 @@ export default function Home() {
 
             <MarketSessionCard stock={result.stock} />
 
+            <StockChartCard stock={result.stock} />
+
             <div className="bg-white rounded-3xl p-5 shadow-sm">
               <p className="text-xs font-black text-gray-400 mb-1">長期評価</p>
               <h3 className="text-lg font-black text-gray-900 mb-2">ファンダメンタル分析</h3>
@@ -283,7 +394,7 @@ export default function Home() {
                     { label: '前日比',       value: s.changePercent !== null ? `${s.changePercent >= 0 ? '+' : ''}${s.changePercent.toFixed(2)}%` : '—', status: s.changePercent !== null ? 'ok' : 'pending', note: 'Stooq' },
                     { label: 'PER',          value: s.per !== null ? `${s.per.toFixed(1)}倍` : '—', status: s.per !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: 'PBR',          value: s.pbr !== null ? `${s.pbr.toFixed(2)}倍` : '—', status: s.pbr !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
-                    { label: 'ROE',          value: s.roe !== null ? `${s.roe.toFixed(1)}%` : '—',  status: s.roe !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
+                    { label: 'ROE',          value: s.roe !== null ? `${s.roe.toFixed(1)}%` : '算出不可',  status: s.roe !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: '配当利回り',   value: s.dividendYield !== null ? `${s.dividendYield.toFixed(2)}%` : '—', status: s.dividendYield !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },
                     { label: '時価総額',     value: fmt(s.marketCap, '億円'), status: s.marketCap !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants（算出）' : pendingNote },
                     { label: '売上高',       value: fmt(s.revenue, '億円'), status: s.revenue !== null ? 'ok' : 'pending', note: isJQ ? 'J-Quants' : pendingNote },

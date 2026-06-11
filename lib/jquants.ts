@@ -326,12 +326,19 @@ export async function fetchJQuantsFundamentals(
 
   const equity = parseNum(latest.Equity)
   const profit = parseNum(latest.Profit)
-  const roe =
+  const calculatedRoe =
     equity !== null && equity > 0 && profit !== null
       ? (profit / equity) * 100
       : eps !== null && bps !== null && bps > 0
         ? (eps / bps) * 100
         : null
+  const roe =
+    calculatedRoe !== null &&
+    Number.isFinite(calculatedRoe) &&
+    calculatedRoe >= -100 &&
+    calculatedRoe <= 100
+      ? Math.round(calculatedRoe * 10) / 10
+      : null
 
   const per =
     currentPrice !== null && annualEps !== null && annualEps > 0

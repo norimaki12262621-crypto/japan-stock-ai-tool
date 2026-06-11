@@ -1,3 +1,26 @@
+export type TechnicalAnalysis = {
+  ma25: number | null
+  ma75: number | null
+  rsi14: number | null
+  avgVolume20: number | null
+  currentVolume: number | null
+  week52High: number | null
+  week52Low: number | null
+  diffFrom52WeekHighPercent: number | null
+  diffFrom52WeekLowPercent: number | null
+  technicalScore: number | null
+  technicalRating: '強い上昇シグナル ◎' | '良好シグナル ○' | '中立 △' | '様子見 △' | '弱いシグナル ×' | null
+  buyTiming: string | null
+  comments: string[]
+}
+
+export type ChartHistoryPoint = {
+  date: string
+  close: number
+  ma25: number | null
+  ma75: number | null
+}
+
 export type StockData = {
   /** 銘柄コード (例: 7203) */
   code: string
@@ -23,18 +46,8 @@ export type StockData = {
   operatingProfit: number | null
   /** 自己資本比率 (%) — 計算値（総資産・自己資本から算出） */
   equityRatio: number | null
-  ma25: number | null
-  ma75: number | null
-  rsi14: number | null
-  avgVolume20: number | null
-  currentVolume: number | null
-  week52High: number | null
-  week52Low: number | null
-  diffFrom52WeekHighPercent: number | null
-  diffFrom52WeekLowPercent: number | null
-  technicalScore: number | null
-  technicalRating: string | null
-  buyTiming: string | null
+  technicalAnalysis: TechnicalAnalysis
+  chartHistory: ChartHistoryPoint[]
   marketSession: {
     status: 'open' | 'break' | 'closed'
     label: string

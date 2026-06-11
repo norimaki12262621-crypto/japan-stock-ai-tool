@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import type { StockData, ApiError } from '@/lib/stockTypes'
+import type { StockData, ApiError, ChartHistoryPoint, TechnicalAnalysis } from '@/lib/stockTypes'
 import { fetchJQuantsFundamentals, fetchJQuantsStatementsDebug } from '@/lib/jquants'
 
 // 主要日本株の銘柄名テーブル
@@ -14,7 +14,7 @@ const STOCK_NAMES: Record<string, string> = {
   '4502': '武田薬品工業', '4503': 'アステラス製薬',
   '4519': '中外製薬', '4523': 'エーザイ', '4568': '第一三共',
   '4661': 'オリエンタルランド', '4689': 'LINEヤフー',
-  '5108': 'ブリヂストン', '5401': '日本製鉄',
+  '5108': 'ブリヂストン', '5401': '日本製鉄', '5803': 'フジクラ',
   '6301': 'コマツ', '6367': 'ダイキン工業',
   '6501': '日立製作所', '6594': 'ニデック',
   '6645': 'オムロン', '6702': '富士通',
@@ -38,6 +38,41 @@ const STOCK_NAMES: Record<string, string> = {
   '9202': 'ANAHD', '9432': 'NTT', '9433': 'KDDI',
   '9434': 'ソフトバンク', '9735': 'セコム',
   '9983': 'ファーストリテイリング', '9984': 'ソフトバンクグループ',
+}
+
+const STOCK_ALIASES: Record<string, string> = {
+  トヨタ: '7203',
+  ソニー: '6758',
+  三菱重工: '7011',
+  フジクラ: '5803',
+  ソフトバンク: '9984',
+  ソフトバンクg: '9984',
+}
+
+function normalizeStockName(value: string): string {
+  return value.normalize('NFKC').trim().toLocaleLowerCase('ja-JP').replace(/[\s・]/g, '')
+}
+
+function resolveStockCode(input: string): string | null {
+  const normalized = normalizeStockName(input)
+  if (/^\d{4}$/.test(normalized)) return normalized
+
+  const aliasCode = STOCK_ALIASES[normalized]
+  if (aliasCode) return aliasCode
+
+  const matches = Object.entries(STOCK_NAMES)
+    .map(([code, name]) => {
+      const normalizedName = normalizeStockName(name)
+      if (normalizedName === normalized) return { code, score: 1000 }
+      if (normalizedName.startsWith(normalized)) return { code, score: 700 - normalizedName.length }
+      const index = normalizedName.indexOf(normalized)
+      if (index >= 0) return { code, score: 400 - index - normalizedName.length }
+      return null
+    })
+    .filter((match): match is { code: string; score: number } => match !== null)
+    .sort((a, b) => b.score - a.score || a.code.localeCompare(b.code))
+
+  return matches[0]?.code ?? null
 }
 
 function yyyymmdd(date: Date): string {
@@ -71,22 +106,12 @@ type PriceResult = PriceData & {
   debug: PriceDebug
 }
 
-type TechnicalData = {
-  ma25: number | null
-  ma75: number | null
-  rsi14: number | null
-  avgVolume20: number | null
-  currentVolume: number | null
-  week52High: number | null
-  week52Low: number | null
-  diffFrom52WeekHighPercent: number | null
-  diffFrom52WeekLowPercent: number | null
-  technicalScore: number | null
-  technicalRating: string | null
-  buyTiming: string | null
-}
-
 type MarketSession = StockData['marketSession']
+type TechnicalSignal = Pick<TechnicalAnalysis, 'technicalScore' | 'technicalRating' | 'buyTiming' | 'comments'>
+type TechnicalResult = {
+  analysis: TechnicalAnalysis
+  chartHistory: ChartHistoryPoint[]
+}
 
 function stooqUrl(code: string): string {
   const today = new Date()
@@ -198,6 +223,12 @@ function round(value: number, digits = 2): number {
   return Math.round(value * factor) / factor
 }
 
+function sanitizeRoe(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null
+  if (value < -100 || value > 100) return null
+  return round(value, 1)
+}
+
 function average(values: number[]): number | null {
   if (values.length === 0) return null
   return values.reduce((sum, value) => sum + value, 0) / values.length
@@ -236,44 +267,91 @@ function scoreTechnical(input: {
   currentVolume: number | null
   diffFrom52WeekHighPercent: number | null
   diffFrom52WeekLowPercent: number | null
-}): { technicalScore: number; technicalRating: string; buyTiming: string } {
+}): TechnicalSignal {
   let score = 50
+  const comments: string[] = []
 
-  if (input.ma25 !== null) score += input.price >= input.ma25 ? 12 : -10
-  if (input.ma75 !== null) score += input.price >= input.ma75 ? 10 : -10
-  if (input.ma25 !== null && input.ma75 !== null) score += input.ma25 >= input.ma75 ? 10 : -8
+  if (input.ma25 !== null) {
+    if (input.price >= input.ma25) {
+      score += 12
+      comments.push('現在株価は25日線を上回っており、短期的には買い優勢です。')
+    } else {
+      score -= 10
+      comments.push('現在株価は25日線を下回っており、短期の勢いは弱めです。')
+    }
+  }
+
+  if (input.ma25 !== null && input.ma75 !== null) {
+    if (input.ma25 >= input.ma75) {
+      score += 12
+      comments.push('25日線が75日線を上回っており、上昇トレンドが確認できます。')
+    } else {
+      score -= 10
+      comments.push('25日線が75日線を下回っており、中期トレンドには注意が必要です。')
+    }
+  } else if (input.ma75 !== null) {
+    score += input.price >= input.ma75 ? 8 : -8
+  }
 
   if (input.rsi14 !== null) {
-    if (input.rsi14 >= 45 && input.rsi14 <= 65) score += 10
-    else if (input.rsi14 > 65 && input.rsi14 <= 75) score += 4
-    else if (input.rsi14 < 35) score -= 8
-    else if (input.rsi14 > 75) score -= 10
+    if (input.rsi14 >= 40 && input.rsi14 <= 70) {
+      score += 10
+      comments.push('RSIは40〜70の範囲で、過熱感の少ない良好な水準です。')
+    } else if (input.rsi14 > 70) {
+      score -= 8
+      comments.push('RSIが70を超えており、短期的には過熱感があります。')
+    } else if (input.rsi14 < 30) {
+      score -= 6
+      comments.push('RSIが30未満で売られすぎの水準です。反発の確認が必要です。')
+    } else {
+      comments.push('RSIはやや弱めですが、売られすぎには達していません。')
+    }
   }
 
   if (input.diffFrom52WeekHighPercent !== null) {
-    if (input.diffFrom52WeekHighPercent >= -10) score += 8
-    else if (input.diffFrom52WeekHighPercent < -30) score -= 8
+    if (input.diffFrom52WeekHighPercent >= -10) {
+      score += 8
+      comments.push('52週高値に近く、上昇トレンドを維持しています。')
+    } else if (input.diffFrom52WeekHighPercent < -30) {
+      score -= 8
+    }
   }
 
   if (input.diffFrom52WeekLowPercent !== null) {
-    if (input.diffFrom52WeekLowPercent > 80) score += 4
-    else if (input.diffFrom52WeekLowPercent < 20) score -= 6
+    if (input.diffFrom52WeekLowPercent < 20) {
+      score -= 8
+      comments.push('52週安値に近く、下落リスクに注意が必要です。')
+    }
   }
 
   if (input.avgVolume20 !== null && input.currentVolume !== null && input.avgVolume20 > 0) {
-    score += input.currentVolume >= input.avgVolume20 ? 6 : -3
+    if (input.currentVolume >= input.avgVolume20) {
+      score += 8
+      comments.push('出来高が20日平均を上回り、値動きの勢いが増しています。')
+    } else {
+      score -= 3
+      comments.push('出来高は20日平均を下回っており、売買の勢いは控えめです。')
+    }
   }
 
   const technicalScore = Math.max(0, Math.min(100, Math.round(score)))
-  if (technicalScore >= 80) return { technicalScore, technicalRating: '強い買い ◎', buyTiming: '上昇トレンドが強く、短期の買いタイミングは良好です。' }
-  if (technicalScore >= 65) return { technicalScore, technicalRating: '買い ○', buyTiming: '買い候補です。押し目や出来高の増加を確認したい局面です。' }
-  if (technicalScore >= 50) return { technicalScore, technicalRating: '中立 △', buyTiming: '方向感は中立です。25日線とRSIの改善を待ちたい局面です。' }
-  if (technicalScore >= 35) return { technicalScore, technicalRating: '様子見 △', buyTiming: '短期の勢いは弱めです。反転確認まで様子見が無難です。' }
-  return { technicalScore, technicalRating: '見送り ×', buyTiming: '短期の買い材料は乏しく、今は見送り優先です。' }
+  if (technicalScore >= 80) {
+    return { technicalScore, technicalRating: '強い上昇シグナル ◎', buyTiming: '上昇トレンドが強く、短期の買いタイミングは良好です。', comments }
+  }
+  if (technicalScore >= 65) {
+    return { technicalScore, technicalRating: '良好シグナル ○', buyTiming: '短期は良好です。押し目や出来高の増加を確認して検討できます。', comments }
+  }
+  if (technicalScore >= 50) {
+    return { technicalScore, technicalRating: '中立 △', buyTiming: '方向感は中立です。25日線やRSIの改善を待ちたい局面です。', comments }
+  }
+  if (technicalScore >= 35) {
+    return { technicalScore, technicalRating: '様子見 △', buyTiming: '短期の勢いは弱めです。反転を確認するまで様子見が無難です。', comments }
+  }
+  return { technicalScore, technicalRating: '弱いシグナル ×', buyTiming: '短期の買い材料は乏しく、今は見送りを優先する局面です。', comments }
 }
 
-async function fetchTechnicalData(code: string, currentPrice: number | null): Promise<TechnicalData> {
-  const empty: TechnicalData = {
+async function fetchTechnicalData(code: string, currentPrice: number | null): Promise<TechnicalResult> {
+  const empty: TechnicalAnalysis = {
     ma25: null,
     ma75: null,
     rsi14: null,
@@ -286,7 +364,9 @@ async function fetchTechnicalData(code: string, currentPrice: number | null): Pr
     technicalScore: null,
     technicalRating: null,
     buyTiming: null,
+    comments: [],
   }
+  const emptyResult: TechnicalResult = { analysis: empty, chartHistory: [] }
 
   try {
     const res = await fetch(yahooUrl(code, '1y'), {
@@ -296,11 +376,13 @@ async function fetchTechnicalData(code: string, currentPrice: number | null): Pr
       },
       next: { revalidate: 60 },
     })
-    if (!res.ok) return empty
+    if (!res.ok) return emptyResult
 
     const data = await res.json()
     const result = data?.chart?.result?.[0]
     const quote = result?.indicators?.quote?.[0]
+    const timestamps = Array.isArray(result?.timestamp) ? result.timestamp : []
+    const rawCloses = Array.isArray(quote?.close) ? quote.close : []
     const closes = Array.isArray(quote?.close)
       ? quote.close.filter((value: unknown): value is number => typeof value === 'number' && Number.isFinite(value))
       : []
@@ -315,7 +397,25 @@ async function fetchTechnicalData(code: string, currentPrice: number | null): Pr
       : []
 
     const price = currentPrice ?? closes.at(-1) ?? null
-    if (price === null) return empty
+    if (price === null) return emptyResult
+
+    const chartHistory: ChartHistoryPoint[] = []
+    const rollingCloses: number[] = []
+    rawCloses.forEach((value: unknown, index: number) => {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return
+      const timestamp = timestamps[index]
+      if (typeof timestamp !== 'number') return
+
+      rollingCloses.push(value)
+      const pointMa25 = movingAverage(rollingCloses, 25)
+      const pointMa75 = movingAverage(rollingCloses, 75)
+      chartHistory.push({
+        date: new Date(timestamp * 1000).toISOString().slice(0, 10),
+        close: round(value, 1),
+        ma25: pointMa25 !== null ? round(pointMa25, 1) : null,
+        ma75: pointMa75 !== null ? round(pointMa75, 1) : null,
+      })
+    })
 
     const ma25 = movingAverage(closes, 25)
     const ma75 = movingAverage(closes, 75)
@@ -341,19 +441,22 @@ async function fetchTechnicalData(code: string, currentPrice: number | null): Pr
     })
 
     return {
-      ma25: ma25 !== null ? round(ma25, 1) : null,
-      ma75: ma75 !== null ? round(ma75, 1) : null,
-      rsi14: rsi14 !== null ? round(rsi14, 1) : null,
-      avgVolume20: avgVolume20 !== null ? Math.round(avgVolume20) : null,
-      currentVolume,
-      week52High: week52High !== null ? round(week52High, 1) : null,
-      week52Low: week52Low !== null ? round(week52Low, 1) : null,
-      diffFrom52WeekHighPercent: diffFrom52WeekHighPercent !== null ? round(diffFrom52WeekHighPercent, 2) : null,
-      diffFrom52WeekLowPercent: diffFrom52WeekLowPercent !== null ? round(diffFrom52WeekLowPercent, 2) : null,
-      ...scored,
+      analysis: {
+        ma25: ma25 !== null ? round(ma25, 1) : null,
+        ma75: ma75 !== null ? round(ma75, 1) : null,
+        rsi14: rsi14 !== null ? round(rsi14, 1) : null,
+        avgVolume20: avgVolume20 !== null ? Math.round(avgVolume20) : null,
+        currentVolume,
+        week52High: week52High !== null ? round(week52High, 1) : null,
+        week52Low: week52Low !== null ? round(week52Low, 1) : null,
+        diffFrom52WeekHighPercent: diffFrom52WeekHighPercent !== null ? round(diffFrom52WeekHighPercent, 2) : null,
+        diffFrom52WeekLowPercent: diffFrom52WeekLowPercent !== null ? round(diffFrom52WeekLowPercent, 2) : null,
+        ...scored,
+      },
+      chartHistory,
     }
   } catch {
-    return empty
+    return emptyResult
   }
 }
 
@@ -395,11 +498,12 @@ function getMarketSession(now = new Date()): MarketSession {
 
 export async function GET(request: Request): Promise<NextResponse<StockData | ApiError | Record<string, unknown>>> {
   const { searchParams } = new URL(request.url)
-  const code = searchParams.get('code')?.replace(/\D/g, '')
+  const query = searchParams.get('code')?.trim() ?? ''
+  const code = resolveStockCode(query)
 
-  if (!code || !/^\d{4}$/.test(code)) {
+  if (!code) {
     return NextResponse.json(
-      { error: '4桁の銘柄コードを入力してください（例: 7203）' },
+      { error: '銘柄コードまたは社名が見つかりませんでした（例: 7203、トヨタ、ソニー）' },
       { status: 400 },
     )
   }
@@ -456,7 +560,7 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     fundamentals = {
       per: jq.per,
       pbr: jq.pbr,
-      roe: jq.roe,
+      roe: sanitizeRoe(jq.roe),
       dividendYield: jq.dividendYield,
       marketCap: jq.marketCap,
       revenue: jq.revenue,
@@ -474,7 +578,8 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
     price,
     changePercent,
     ...fundamentals,
-    ...technical,
+    technicalAnalysis: technical.analysis,
+    chartHistory: technical.chartHistory,
     marketSession,
     fetchedAt: new Date().toISOString(),
     dataSource: hasJQuantsEnv ? 'jquants' : priceSource,

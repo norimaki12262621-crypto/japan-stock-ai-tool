@@ -21,6 +21,16 @@ export type ChartHistoryPoint = {
   ma75: number | null
 }
 
+export type StockSearchCandidate = {
+  code: string
+  name: string
+}
+
+export type StockSearchCandidatesResponse = {
+  query: string
+  candidates: StockSearchCandidate[]
+}
+
 export type StockData = {
   /** 銘柄コード (例: 7203) */
   code: string

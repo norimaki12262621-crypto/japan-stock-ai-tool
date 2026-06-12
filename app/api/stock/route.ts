@@ -1,78 +1,54 @@
 import { NextResponse } from 'next/server'
-import type { StockData, ApiError, ChartHistoryPoint, TechnicalAnalysis } from '@/lib/stockTypes'
-import { fetchJQuantsFundamentals, fetchJQuantsStatementsDebug } from '@/lib/jquants'
+import type {
+  StockData,
+  ApiError,
+  ChartHistoryPoint,
+  StockSearchCandidate,
+  StockSearchCandidatesResponse,
+  TechnicalAnalysis,
+} from '@/lib/stockTypes'
+import {
+  fetchJQuantsFundamentals,
+  fetchJQuantsListedInfo,
+  fetchJQuantsStatementsDebug,
+} from '@/lib/jquants'
+import { searchStocks, findStockByCode, normalizeForSearch } from '@/lib/stockSearch'
 
-// 主要日本株の銘柄名テーブル
-const STOCK_NAMES: Record<string, string> = {
-  '1301': '極洋', '1332': 'ニッスイ', '1605': 'INPEX',
-  '1721': 'コムシスHD', '1801': '大成建設', '1802': '大林組',
-  '1803': '清水建設', '1812': '鹿島', '1925': '大和ハウス工業',
-  '2502': 'アサヒグループHD', '2503': 'キリンHD',
-  '2801': 'キッコーマン', '2802': '味の素', '2914': 'JT',
-  '3382': 'セブン&アイHD', '3659': 'ネクソン',
-  '4063': '信越化学工業', '4452': '花王',
-  '4502': '武田薬品工業', '4503': 'アステラス製薬',
-  '4519': '中外製薬', '4523': 'エーザイ', '4568': '第一三共',
-  '4661': 'オリエンタルランド', '4689': 'LINEヤフー',
-  '5108': 'ブリヂストン', '5401': '日本製鉄', '5803': 'フジクラ',
-  '6301': 'コマツ', '6367': 'ダイキン工業',
-  '6501': '日立製作所', '6594': 'ニデック',
-  '6645': 'オムロン', '6702': '富士通',
-  '6723': 'ルネサスエレクトロニクス', '6752': 'パナソニックHD',
-  '6758': 'ソニーグループ', '6861': 'キーエンス',
-  '6902': 'デンソー', '6920': 'レーザーテック',
-  '6954': 'ファナック', '6971': '京セラ', '6981': '村田製作所',
-  '7011': '三菱重工業', '7201': '日産自動車',
-  '7203': 'トヨタ自動車', '7267': 'ホンダ',
-  '7269': 'スズキ', '7270': 'SUBARU',
-  '7741': 'HOYA', '7751': 'キヤノン', '7974': '任天堂',
-  '8001': '伊藤忠商事', '8002': '丸紅',
-  '8031': '三井物産', '8035': '東京エレクトロン',
-  '8053': '住友商事', '8058': '三菱商事',
-  '8306': '三菱UFJフィナンシャル・グループ',
-  '8316': '三井住友フィナンシャルグループ',
-  '8411': 'みずほフィナンシャルグループ',
-  '8766': '東京海上HD', '8802': '三菱地所',
-  '9020': 'JR東日本', '9021': 'JR西日本', '9022': 'JR東海',
-  '9064': 'ヤマトHD', '9104': '商船三井', '9107': '川崎汽船',
-  '9202': 'ANAHD', '9432': 'NTT', '9433': 'KDDI',
-  '9434': 'ソフトバンク', '9735': 'セコム',
-  '9983': 'ファーストリテイリング', '9984': 'ソフトバンクグループ',
+function normalizeStockCode(input: string): string | null {
+  const normalizedCode = input.normalize('NFKC').trim().toUpperCase()
+  if (/^(?:\d{4}|\d{3}[A-Z])$/.test(normalizedCode)) return normalizedCode
+  return null
 }
 
-const STOCK_ALIASES: Record<string, string> = {
-  トヨタ: '7203',
-  ソニー: '6758',
-  三菱重工: '7011',
-  フジクラ: '5803',
-  ソフトバンク: '9984',
-  ソフトバンクg: '9984',
-}
+type RankedStockSearchCandidate = StockSearchCandidate & { rank: number }
 
-function normalizeStockName(value: string): string {
-  return value.normalize('NFKC').trim().toLocaleLowerCase('ja-JP').replace(/[\s・]/g, '')
-}
+async function searchListedCompanies(query: string): Promise<RankedStockSearchCandidate[]> {
+  // J-Quants APIキーがある場合はAPIを優先
+  if (process.env.JQUANTS_API_KEY) {
+    try {
+      const normalizedQuery = normalizeForSearch(query)
+      if (normalizedQuery) {
+        const companies = await fetchJQuantsListedInfo()
+        const jqResults = companies
+          .map((company) => {
+            const normalizedName = normalizeForSearch(company.name)
+            if (normalizedName === normalizedQuery) return { ...company, rank: 0 }
+            if (normalizedName.startsWith(normalizedQuery)) return { ...company, rank: 1 }
+            if (normalizedName.includes(normalizedQuery)) return { ...company, rank: 2 }
+            return null
+          })
+          .filter((c): c is RankedStockSearchCandidate => c !== null)
+          .sort((a, b) => a.rank - b.rank || a.name.length - b.name.length || a.code.localeCompare(b.code))
+          .slice(0, 10)
+        if (jqResults.length > 0) return jqResults
+      }
+    } catch {
+      // APIエラー時は静的JSONにフォールバック
+    }
+  }
 
-function resolveStockCode(input: string): string | null {
-  const normalized = normalizeStockName(input)
-  if (/^\d{4}$/.test(normalized)) return normalized
-
-  const aliasCode = STOCK_ALIASES[normalized]
-  if (aliasCode) return aliasCode
-
-  const matches = Object.entries(STOCK_NAMES)
-    .map(([code, name]) => {
-      const normalizedName = normalizeStockName(name)
-      if (normalizedName === normalized) return { code, score: 1000 }
-      if (normalizedName.startsWith(normalized)) return { code, score: 700 - normalizedName.length }
-      const index = normalizedName.indexOf(normalized)
-      if (index >= 0) return { code, score: 400 - index - normalizedName.length }
-      return null
-    })
-    .filter((match): match is { code: string; score: number } => match !== null)
-    .sort((a, b) => b.score - a.score || a.code.localeCompare(b.code))
-
-  return matches[0]?.code ?? null
+  // 静的JSON（public/stocks.json）で検索
+  return searchStocks(query).map((c) => ({ ...c, rank: 0 }))
 }
 
 function yyyymmdd(date: Date): string {
@@ -496,16 +472,52 @@ function getMarketSession(now = new Date()): MarketSession {
   return { status: 'closed', label: '時間外', nextSession: '次の営業日 9:00 前場開始', isHoliday: false }
 }
 
-export async function GET(request: Request): Promise<NextResponse<StockData | ApiError | Record<string, unknown>>> {
+export async function GET(request: Request): Promise<NextResponse<StockData | ApiError | StockSearchCandidatesResponse | Record<string, unknown>>> {
   const { searchParams } = new URL(request.url)
   const query = searchParams.get('code')?.trim() ?? ''
-  const code = resolveStockCode(query)
+  let code = normalizeStockCode(query)
+  let companyName: string | null = null
+
+  if (!code && query) {
+    try {
+      const candidates = await searchListedCompanies(query)
+      const exactMatches = candidates.filter((candidate) => candidate.rank === 0)
+      if (exactMatches.length === 1) {
+        code = exactMatches[0].code
+        companyName = exactMatches[0].name
+      } else if (candidates.length === 1) {
+        code = candidates[0].code
+        companyName = candidates[0].name
+      } else if (candidates.length > 1) {
+        return NextResponse.json({
+          query,
+          candidates: candidates.map(({ code: candidateCode, name }) => ({ code: candidateCode, name })),
+        })
+      }
+    } catch (e) {
+      return NextResponse.json(
+        { error: `上場銘柄一覧の取得に失敗しました。(${e instanceof Error ? e.message : 'unknown'})` },
+        { status: 502 },
+      )
+    }
+  }
 
   if (!code) {
-    return NextResponse.json(
-      { error: '銘柄コードまたは社名が見つかりませんでした（例: 7203、トヨタ、ソニー）' },
-      { status: 400 },
-    )
+    return NextResponse.json({ error: '該当する上場銘柄が見つかりませんでした。' }, { status: 400 })
+  }
+
+  if (!companyName) {
+    if (process.env.JQUANTS_API_KEY) {
+      try {
+        companyName = (await fetchJQuantsListedInfo()).find((company) => company.code === code)?.name ?? null
+      } catch {
+        // fall through
+      }
+    }
+    // 静的JSONからも名前解決を試みる
+    if (!companyName) {
+      companyName = findStockByCode(code)?.name ?? null
+    }
   }
 
   if (searchParams.get('debug') === '1') {
@@ -574,7 +586,7 @@ export async function GET(request: Request): Promise<NextResponse<StockData | Ap
 
   const stock: StockData = {
     code,
-    name: STOCK_NAMES[code] ?? code,
+    name: companyName ?? code,
     price,
     changePercent,
     ...fundamentals,

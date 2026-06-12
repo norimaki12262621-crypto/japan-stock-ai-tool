@@ -1,8 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { diagnose } from '@/lib/stockScoring'
-import type { ChartHistoryPoint, DiagnosisResult, StockData } from '@/lib/stockTypes'
+import type {
+  ChartHistoryPoint,
+  DiagnosisResult,
+  StockData,
+  StockSearchCandidate,
+  StockSearchCandidatesResponse,
+} from '@/lib/stockTypes'
 
 const JUDGMENT_STYLE = {
   買い候補: { bg: 'bg-emerald-50', border: 'border-emerald-400', text: 'text-emerald-700', badge: 'bg-emerald-500', icon: '📈' },
@@ -229,9 +235,50 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<DiagnosisResult | null>(null)
+  const [candidates, setCandidates] = useState<StockSearchCandidate[]>([])
+  const [selectedIdx, setSelectedIdx] = useState(-1)
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
-  const handleAnalyze = async () => {
+  // 入力中のリアルタイム検索 (200ms デバウンス)
+  useEffect(() => {
     const trimmed = code.trim()
+    // 4桁コード入力中 or 1文字未満 は検索しない
+    if (trimmed.length < 2 || /^\d{4}$/.test(trimmed)) {
+      setCandidates([])
+      return
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(trimmed)}`)
+        if (res.ok) {
+          const data = await res.json()
+          if (Array.isArray(data.candidates)) {
+            setCandidates(data.candidates)
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [code])
+
+  // candidatesが変わったら選択インデックスをリセット
+  useEffect(() => { setSelectedIdx(-1) }, [candidates])
+
+  // ドロップダウン外クリックで閉じる
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setCandidates([])
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const handleAnalyze = async (searchValue = code) => {
+    const trimmed = searchValue.trim()
     if (!trimmed) {
       setError('銘柄コードまたは社名を入力してください')
       return
@@ -239,11 +286,17 @@ export default function Home() {
     setError('')
     setLoading(true)
     setResult(null)
+    setCandidates([])
+    setSelectedIdx(-1)
     try {
       const res = await fetch(`/api/stock?code=${encodeURIComponent(trimmed)}`)
       const data = await res.json()
       if (!res.ok) {
         setError(data.error ?? 'エラーが発生しました')
+        return
+      }
+      if (Array.isArray((data as StockSearchCandidatesResponse).candidates)) {
+        setCandidates((data as StockSearchCandidatesResponse).candidates)
         return
       }
       setResult(diagnose(data as StockData))
@@ -281,25 +334,86 @@ export default function Home() {
         {/* 入力エリア */}
         <div className="bg-white rounded-3xl shadow-xl p-6">
           <label className="block text-sm font-bold text-gray-600 mb-2">銘柄コード・社名</label>
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={code}
-              onChange={(e) => { setCode(e.target.value); setError('') }}
-              onKeyDown={(e) => e.key === 'Enter' && !loading && handleAnalyze()}
-              placeholder="例：7203 または トヨタ"
-              className="flex-1 min-w-0 h-12 border-2 border-gray-200 rounded-2xl px-4 text-base font-bold focus:border-blue-500 focus:outline-none transition-colors"
-            />
-            <button
-              onClick={handleAnalyze}
-              disabled={loading}
-              className="h-12 px-6 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-700 active:scale-95 transition-all disabled:opacity-50 whitespace-nowrap"
-            >
-              {loading ? '分析中...' : '診断する'}
-            </button>
+          <div className="relative" ref={dropdownRef}>
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={code}
+                onChange={(e) => { setCode(e.target.value); setError('') }}
+                onKeyDown={(e) => {
+                  if (candidates.length > 0) {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault()
+                      setSelectedIdx((i) => Math.min(i + 1, candidates.length - 1))
+                      return
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      setSelectedIdx((i) => Math.max(i - 1, -1))
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      setCandidates([])
+                      setSelectedIdx(-1)
+                      return
+                    }
+                    if (e.key === 'Enter' && selectedIdx >= 0) {
+                      e.preventDefault()
+                      const sel = candidates[selectedIdx]
+                      setCode(sel.code)
+                      setCandidates([])
+                      handleAnalyze(sel.code)
+                      return
+                    }
+                  }
+                  if (e.key === 'Enter' && !loading) handleAnalyze()
+                }}
+                placeholder="例：7203 / トヨタ / 川崎重工 / かわさきじゅうこう"
+                className="flex-1 min-w-0 h-12 border-2 border-gray-200 rounded-2xl px-4 text-base font-bold focus:border-blue-500 focus:outline-none transition-colors"
+                autoComplete="off"
+              />
+              <button
+                onClick={() => handleAnalyze()}
+                disabled={loading}
+                className="h-12 px-6 bg-slate-900 text-white font-black rounded-2xl hover:bg-slate-700 active:scale-95 transition-all disabled:opacity-50 whitespace-nowrap"
+              >
+                {loading ? '分析中...' : '診断する'}
+              </button>
+            </div>
+
+            {/* リアルタイムドロップダウン */}
+            {candidates.length > 0 && (
+              <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                <p className="text-[11px] font-bold text-gray-400 px-3 pt-2 pb-1">
+                  {candidates.length} 件の候補（↑↓で選択、Enterで確定）
+                </p>
+                <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+                  {candidates.map((candidate, idx) => (
+                    <button
+                      key={candidate.code}
+                      type="button"
+                      onMouseEnter={() => setSelectedIdx(idx)}
+                      onClick={() => {
+                        setCode(candidate.code)
+                        setCandidates([])
+                        setSelectedIdx(-1)
+                        handleAnalyze(candidate.code)
+                      }}
+                      className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors ${
+                        idx === selectedIdx ? 'bg-blue-50' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <span className="text-sm font-bold text-gray-800">{candidate.name}</span>
+                      <span className="text-xs font-mono text-gray-400 shrink-0">{candidate.code}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+
           {error && <p className="mt-2 text-sm text-red-500">⚠️ {error}</p>}
-          <p className="mt-2 text-xs text-gray-400">例: 7203 / トヨタ / ソニー / 三菱重工 / フジクラ</p>
+          <p className="mt-2 text-xs text-gray-400">例: 7203 / トヨタ / ソニー / 川崎重工 / キーエンス</p>
         </div>
 
         {/* ローディング */}

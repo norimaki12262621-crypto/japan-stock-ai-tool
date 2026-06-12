@@ -50,6 +50,27 @@ type StatementsResponse = {
   pagination_key?: string
 }
 
+type RawListedInfo = {
+  LocalCode?: string
+  Code?: string
+  CompanyName?: string
+  CoName?: string
+}
+
+type ListedInfoResponse = {
+  data?: RawListedInfo[]
+  info?: RawListedInfo[]
+  master?: RawListedInfo[]
+  message?: string
+  pagination_key?: string
+  paginationKey?: string
+}
+
+export type JQuantsListedCompany = {
+  code: string
+  name: string
+}
+
 export type JQuantsFundamentals = {
   revenue: number | null
   operatingProfit: number | null
@@ -91,6 +112,49 @@ function getApiKey(): string {
 
 function statementsUrl(code: string): string {
   return `${BASE}/fins/summary?code=${encodeURIComponent(code)}`
+}
+
+function listedInfoUrl(paginationKey?: string): string {
+  const url = new URL(`${BASE}/equities/master`)
+  if (paginationKey) url.searchParams.set('pagination_key', paginationKey)
+  return url.toString()
+}
+
+let listedInfoMemoryCache: { expiresAt: number; companies: JQuantsListedCompany[] } | null = null
+
+export async function fetchJQuantsListedInfo(): Promise<JQuantsListedCompany[]> {
+  if (listedInfoMemoryCache && listedInfoMemoryCache.expiresAt > Date.now()) {
+    return listedInfoMemoryCache.companies
+  }
+
+  const apiKey = getApiKey()
+  const companies: JQuantsListedCompany[] = []
+  let paginationKey: string | undefined
+
+  do {
+    const res = await fetch(listedInfoUrl(paginationKey), {
+      headers: { 'x-api-key': apiKey },
+      next: { revalidate: 86_400 },
+    })
+    const json = await res.json() as ListedInfoResponse
+    if (!res.ok) {
+      throw new Error(`equities/master failed (${res.status}): ${json.message ?? 'unknown'}`)
+    }
+
+    for (const item of json.data ?? json.info ?? json.master ?? []) {
+      const code = (item.LocalCode ?? item.Code)?.trim().toUpperCase()
+      const name = (item.CompanyName ?? item.CoName)?.trim()
+      if (code && name) companies.push({ code, name })
+    }
+    paginationKey = json.pagination_key || json.paginationKey || undefined
+  } while (paginationKey)
+
+  const uniqueCompanies = [...new Map(companies.map((company) => [company.code, company])).values()]
+  listedInfoMemoryCache = {
+    expiresAt: Date.now() + 86_400_000,
+    companies: uniqueCompanies,
+  }
+  return uniqueCompanies
 }
 
 async function fetchStatementsResponse(apiKey: string, code: string): Promise<{
